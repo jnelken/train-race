@@ -560,39 +560,59 @@ class TrainGame {
     }
 
     drawTunnelEffect(ctx) {
-        const W = this.canvas.width, H = this.canvas.height;
-        // Blacken everything above the tracks
-        ctx.fillStyle = '#0d0d0d';
-        ctx.fillRect(0, 0, W, TRACK_BACK - 6);
-        // Tunnel wall texture lines
-        ctx.strokeStyle = '#1e1e1e';
+        const W = this.canvas.width;
+        // Tunnel band — covers ONLY the train/track zone; sky above stays visible
+        const ceilY  = TRACK_BACK - TRAIN_HEIGHT - 5;  // just above the back train  (≈182)
+        const floorY = TRACK_FRONT + 28;                // just below the front track (≈306)
+
+        // Dark tunnel interior
+        ctx.fillStyle = '#0f0f0f';
+        ctx.fillRect(0, ceilY, W, floorY - ceilY);
+
+        // Ceiling tile lines (near the top of the tunnel band)
+        ctx.strokeStyle = '#222';
         ctx.lineWidth = 2;
-        for (let i = 0; i < 4; i++) {
+        for (let y = ceilY + 10; y < ceilY + 32; y += 10) {
             ctx.beginPath();
-            ctx.moveTo(0, 20 + i * 28);
-            ctx.lineTo(W, 20 + i * 28);
+            ctx.moveTo(0, y);
+            ctx.lineTo(W, y);
             ctx.stroke();
         }
-        // Dim overhead lamp glows
-        const lampOff = this.cameraX % 220;
-        ctx.fillStyle = 'rgba(255,230,100,0.10)';
-        for (let x = -lampOff; x < W; x += 220) {
+
+        // Floor tile lines (near the bottom of the tunnel band)
+        for (let y = floorY - 8; y < floorY; y += 8) {
             ctx.beginPath();
-            ctx.ellipse(x + 110, TRACK_BACK - 22, 35, 18, 0, 0, Math.PI * 2);
+            ctx.moveTo(0, y);
+            ctx.lineTo(W, y);
+            ctx.stroke();
+        }
+
+        // Dim overhead lamp glows spaced every 220 px
+        const lampOff = this.cameraX % 220;
+        ctx.fillStyle = 'rgba(255,230,100,0.13)';
+        for (let x = -lampOff + 110; x < W + 110; x += 220) {
+            ctx.beginPath();
+            ctx.ellipse(x, ceilY + 14, 30, 11, 0, 0, Math.PI * 2);
             ctx.fill();
         }
     }
 
     drawTunnelPortals(ctx) {
+        // Portal height matches the tunnel band exactly
+        const ceilY  = TRACK_BACK - TRAIN_HEIGHT - 5;
+        const floorY = TRACK_FRONT + 28;
+        const pw = 22;  // jamb thickness
+
         for (const zone of this.tunnelZones) {
             for (const edgeX of [zone.startX, zone.endX]) {
                 const sx = this.worldToScreen(edgeX);
-                if (sx < -40 || sx > this.canvas.width + 40) continue;
-                const top = 20, bot = TRACK_FRONT + 8, pw = 20;
-                ctx.fillStyle = '#5d4037';
-                ctx.fillRect(sx - pw, top, pw, bot - top); // left jamb
-                ctx.fillRect(sx,      top, pw, bot - top); // right jamb
-                ctx.fillRect(sx - pw, top, pw * 2, pw);    // lintel
+                if (sx < -60 || sx > this.canvas.width + 60) continue;
+
+                ctx.fillStyle = '#5d4037';  // dark brick/concrete
+                ctx.fillRect(sx - pw, ceilY,  pw, floorY - ceilY);  // left jamb
+                ctx.fillRect(sx,      ceilY,  pw, floorY - ceilY);  // right jamb
+                ctx.fillRect(sx - pw, ceilY,  pw * 2, pw);          // top lintel
+                ctx.fillRect(sx - pw, floorY - pw, pw * 2, pw);     // bottom sill
             }
         }
     }
