@@ -5,6 +5,9 @@ const CAMERA_LERP  = 0.08;
 const TRACK_BACK   = 252;
 const TRACK_FRONT  = 278;
 const HORIZON_Y    = 200;  // y where sky meets land
+const SEGMENT_LEN  = 2500; // world units per theme segment (sahara → city → sahara → city)
+const STREET_Y     = 358;  // city street surface y
+const PILLAR_GAP   = 120;  // bridge support spacing
 
 // ─── Procedural scenery factories ────────────────────────────────────────────
 
@@ -37,6 +40,20 @@ function makeTreeCluster(x) {
 
 function makeRock(x) {
     return { x, type: 'rock', y: TRACK_FRONT - 12 };
+}
+
+const BUILDING_COLORS = ['#263238','#37474f','#455a64','#2c3e50','#1a252f','#2d3561','#1e2a3a'];
+function makeBuilding(x) {
+    const w    = 80  + Math.random() * 200;
+    const h    = 80  + Math.random() * 160;
+    const winR = 3   + Math.floor(Math.random() * 5);
+    const winC = 2   + Math.floor(Math.random() * 4);
+    const lit  = Array.from({ length: winR * winC }, () => Math.random() < 0.6);
+    return {
+        type: 'building', x, w, h,
+        color: BUILDING_COLORS[Math.floor(Math.random() * BUILDING_COLORS.length)],
+        winR, winC, lit,
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,7 +91,7 @@ class TrainGame {
             initialRampDone: false,
         };
 
-        this.gameState = { distance: 0, time: 0, isRunning: true, result: null };
+        this.gameState = { distance: 0, time: 0, isRunning: true, result: null, endTime: null };
         this.raceStarted = false;
 
         this.wheelFrame = 0;
@@ -86,6 +103,11 @@ class TrainGame {
             { name: 'trees',     speed: 0.6, objects: [], nextSpawnX: 0 },
             { name: 'rocks',     speed: 0.9, objects: [], nextSpawnX: 0 },
         ];
+
+        this.tunnelZones  = this.generateTunnelZones();
+        this.cars         = [];
+        this.crowd        = [];
+        this.crowdSpawned = false;
 
         this.generateInitialScenery();
         this.keys = {};
@@ -108,10 +130,99 @@ class TrainGame {
         }
     }
 
+    themeAt(worldX) {
+        return Math.floor(worldX / SEGMENT_LEN) % 2 === 0 ? 'sahara' : 'city';
+    }
+
+    generateTunnelZones() {
+        const zones = [];
+        // City segments live at SEGMENT_LEN*1 and SEGMENT_LEN*3
+        for (const segStart of [SEGMENT_LEN, SEGMENT_LEN * 3]) {
+            const n = 1 + Math.floor(Math.random() * 2);
+            for (let i = 0; i < n; i++) {
+                const cx = segStart + (SEGMENT_LEN / (n + 1)) * (i + 1) + (Math.random() - 0.5) * 250;
+                zones.push({ startX: cx, endX: cx + 380 + Math.random() * 320 });
+            }
+        }
+        return zones;
+    }
+
+    inTunnel(worldX) {
+        return this.tunnelZones.some(z => worldX >= z.startX && worldX <= z.endX);
+    }
+
     spawnObjectForLayer(layer, x) {
-        if      (layer.name === 'mountains') layer.objects.push(makeMountain(x));
-        else if (layer.name === 'trees')     layer.objects.push(makeTreeCluster(x));
-        else                                 layer.objects.push(makeRock(x));
+        const theme = this.themeAt(this.cameraX);
+        if (theme === 'sahara') {
+            if      (layer.name === 'mountains') layer.objects.push(makeMountain(x));
+            else if (layer.name === 'trees')     layer.objects.push(makeTreeCluster(x));
+            else                                 layer.objects.push(makeRock(x));
+        } else {
+            // city: only background layer gets buildings; other layers skipped (city ground is procedural)
+            if (layer.name === 'mountains') layer.objects.push(makeBuilding(x));
+        }
+    }
+
+    spawnCar() {
+        const COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#ecf0f1','#e8d44d','#e67e22'];
+        const goRight = Math.random() < 0.55;
+        return {
+            x:     this.cameraX + (goRight ? this.canvas.width * 0.6 + Math.random() * 300
+                                           : -Math.random() * 300),
+            vx:    goRight ? 1 + Math.random() * 1.5 : -(1 + Math.random() * 2),
+            color: COLORS[Math.floor(Math.random() * COLORS.length)],
+            w:     28 + Math.floor(Math.random() * 16),
+        };
+    }
+
+    spawnCrowd() {
+        this.crowdSpawned = true;
+        const stoppedX = Math.max(this.train.worldX, FINISH_LINE_WORLD_X);
+        const count = 24 + Math.floor(Math.random() * 12);  // 24–36 people
+        for (let i = 0; i < count; i++) {
+            const side = Math.random() < 0.5 ? 1 : -1;
+            // Spread out to both sides of the stopped train, staggered depths
+            const ox      = TRAIN_WIDTH * 0.6 + 10 + Math.random() * 220;
+            const onFront = Math.random() < 0.65;  // 65 % crowd the player's (front) track
+            this.crowd.push({
+                x:       stoppedX + side * ox,
+                trackY:  onFront ? TRACK_FRONT - 20 : TRACK_BACK - 20,
+                targetX: stoppedX + (Math.random() - 0.5) * TRAIN_WIDTH * 0.6,
+                color:   `hsl(${Math.floor(Math.random() * 360)},70%,60%)`,
+                phase:   Math.random() * Math.PI * 2,
+                speed:   2.2 + Math.random() * 2.0,   // faster walk: 2–4 px/frame
+                opacity: 1.0,
+                done:    false,
+            });
+        }
+    }
+
+    updateCars() {
+        const theme = this.themeAt(this.cameraX);
+        if (theme === 'city') {
+            if (this.cars.length < 7) this.cars.push(this.spawnCar());
+        } else {
+            this.cars = []; // clear cars outside city segments
+            return;
+        }
+        for (const c of this.cars) c.x += c.vx;
+        this.cars = this.cars.filter(c => {
+            const sx = this.worldToScreen(c.x);
+            return sx > -200 && sx < this.canvas.width + 200;
+        });
+    }
+
+    updateCrowd() {
+        for (const p of this.crowd) {
+            if (p.done) continue;
+            const dx = p.targetX - p.x;
+            p.x += Math.sign(dx) * Math.min(Math.abs(dx), p.speed);
+            if (Math.abs(dx) < p.speed) {
+                p.opacity -= 0.018;  // ~55-frame fade (≈ 0.9 s at 60 fps)
+                if (p.opacity <= 0) p.done = true;
+            }
+        }
+        this.crowd = this.crowd.filter(p => !p.done);
     }
 
     setupInputListeners() {
@@ -143,10 +254,28 @@ class TrainGame {
             if (pf && of) this.gameState.result = 'tie';
             else if (pf)  this.gameState.result = 'win';
             else          this.gameState.result = 'lose';
+            if (!this.gameState.endTime) this.gameState.endTime = Date.now();
         }
     }
 
     update(deltaTime) {
+        // ── Post-race: coast to stop, animate crowd, keep cars moving ──────────
+        if (!this.gameState.isRunning) {
+            this.train.vx    *= this.train.friction;
+            this.train.worldX += this.train.vx;
+            this.cameraX     += (this.train.worldX - this.cameraX) * CAMERA_LERP;
+            this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
+            if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
+            this.opponent.vx    *= this.train.friction;
+            this.opponent.worldX += this.opponent.vx;
+            this.opponent.wheelFrame += Math.abs(this.opponent.vx) * this.wheelAnimationSpeed;
+            if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
+            this.updateCars();
+            if (!this.crowdSpawned) this.spawnCrowd();
+            this.updateCrowd();
+            return;
+        }
+
         // Active boost tokens: each press gives +5 % for 1 s, capped at 4 (= +20 %)
         const now = Date.now();
         this.boostTokens = this.boostTokens.filter(t => now - t < 1000);
@@ -230,6 +359,7 @@ class TrainGame {
         this.opponent.wheelFrame += this.opponent.vx * this.wheelAnimationSpeed;
         if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
 
+        this.updateCars();
         this.checkFinish();
         this.gameState.time += deltaTime;
     }
@@ -305,6 +435,159 @@ class TrainGame {
         ctx.fillRect(x - p*9,       y,               p*2, p*2);
     }
 
+    // ─── City draw helpers ─────────────────────────────────────────────────
+
+    drawBuilding(ctx, obj, sx) {
+        const base = HORIZON_Y + 10;
+        const top  = base - obj.h;
+        ctx.fillStyle = obj.color;
+        ctx.fillRect(sx, top, obj.w, obj.h);
+        // Darker left edge (depth)
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fillRect(sx, top, 7, obj.h);
+        // Windows
+        const pad = 8, wW = Math.max(5, (obj.w - pad * (obj.winC + 1)) / obj.winC);
+        const wH  = Math.max(5, (obj.h  - pad * (obj.winR + 1)) / obj.winR);
+        for (let r = 0; r < obj.winR; r++) {
+            for (let c = 0; c < obj.winC; c++) {
+                const wx = sx + pad + c * (wW + pad);
+                const wy = top + pad + r * (wH + pad);
+                const lit = obj.lit[r * obj.winC + c];
+                ctx.fillStyle = lit ? '#ffd54f' : '#1a2a3a';
+                ctx.fillRect(wx, wy, wW, wH);
+                if (lit) {
+                    ctx.fillStyle = 'rgba(255,215,80,0.25)';
+                    ctx.fillRect(wx - 1, wy - 1, wW + 2, wH + 2);
+                }
+            }
+        }
+    }
+
+    drawCityGround(ctx) {
+        const W = this.canvas.width, H = this.canvas.height;
+
+        // Concrete bridge deck (fills the ground area)
+        ctx.fillStyle = '#607d8b';
+        ctx.fillRect(0, HORIZON_Y, W, H - HORIZON_Y);
+
+        // Bridge guard-rails along each track edge
+        ctx.fillStyle = '#90a4ae';
+        ctx.fillRect(0, TRACK_BACK  - 9, W, 5);
+        ctx.fillRect(0, TRACK_FRONT + 4, W, 5);
+
+        // Pillar supports going down to street
+        const off = this.cameraX % PILLAR_GAP;
+        ctx.fillStyle = '#546e7a';
+        for (let x = -off; x < W; x += PILLAR_GAP) {
+            ctx.fillRect(x + PILLAR_GAP / 2 - 6, TRACK_FRONT + 9, 12, STREET_Y - 30 - TRACK_FRONT - 9);
+        }
+
+        // Street surface
+        ctx.fillStyle = '#37474f';
+        ctx.fillRect(0, STREET_Y - 32, W, 32 + H - STREET_Y);
+
+        // Yellow centre-line dashes
+        ctx.fillStyle = '#fbc02d';
+        const dashOff = this.cameraX % 48;
+        for (let x = -dashOff; x < W; x += 48) {
+            ctx.fillRect(x, STREET_Y - 18, 24, 4);
+        }
+        // White kerb lines
+        ctx.fillStyle = '#b0bec5';
+        ctx.fillRect(0, STREET_Y - 32, W, 2);
+        ctx.fillRect(0, STREET_Y - 4,  W, 2);
+    }
+
+    drawCar(ctx, car) {
+        const sx = this.worldToScreen(car.x);
+        const sy = STREET_Y - 22;
+        ctx.fillStyle = car.color;
+        ctx.fillRect(sx, sy, car.w, 14);
+        // Windshield (front based on direction)
+        ctx.fillStyle = 'rgba(160,230,255,0.7)';
+        const wsX = car.vx > 0 ? sx + car.w - 9 : sx + 1;
+        ctx.fillRect(wsX, sy + 2, 8, 10);
+        // Wheels
+        ctx.fillStyle = '#111';
+        ctx.fillRect(sx + 3,          sy + 11, 6, 4);
+        ctx.fillRect(sx + car.w - 9,  sy + 11, 6, 4);
+    }
+
+    drawTunnelEffect(ctx) {
+        const W = this.canvas.width, H = this.canvas.height;
+        // Blacken everything above the tracks
+        ctx.fillStyle = '#0d0d0d';
+        ctx.fillRect(0, 0, W, TRACK_BACK - 6);
+        // Tunnel wall texture lines
+        ctx.strokeStyle = '#1e1e1e';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 4; i++) {
+            ctx.beginPath();
+            ctx.moveTo(0, 20 + i * 28);
+            ctx.lineTo(W, 20 + i * 28);
+            ctx.stroke();
+        }
+        // Dim overhead lamp glows
+        const lampOff = this.cameraX % 220;
+        ctx.fillStyle = 'rgba(255,230,100,0.10)';
+        for (let x = -lampOff; x < W; x += 220) {
+            ctx.beginPath();
+            ctx.ellipse(x + 110, TRACK_BACK - 22, 35, 18, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    drawTunnelPortals(ctx) {
+        for (const zone of this.tunnelZones) {
+            for (const edgeX of [zone.startX, zone.endX]) {
+                const sx = this.worldToScreen(edgeX);
+                if (sx < -40 || sx > this.canvas.width + 40) continue;
+                const top = 20, bot = TRACK_FRONT + 8, pw = 20;
+                ctx.fillStyle = '#5d4037';
+                ctx.fillRect(sx - pw, top, pw, bot - top); // left jamb
+                ctx.fillRect(sx,      top, pw, bot - top); // right jamb
+                ctx.fillRect(sx - pw, top, pw * 2, pw);    // lintel
+            }
+        }
+    }
+
+    drawCrowdPerson(ctx, person) {
+        const sx = this.worldToScreen(person.x);
+        if (sx < -14 || sx > this.canvas.width + 14) return;
+        const t      = Date.now() / 160 + person.phase;
+        const bounce = Math.abs(Math.sin(t)) * 6;
+        // Alternate leg stride so it looks like walking
+        const legSwing = Math.sin(t * 2.5) * 3;
+        const sy = person.trackY - bounce;
+        ctx.globalAlpha = person.opacity;
+
+        // Shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(sx, person.trackY + 3, 7, 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Body (coat/jacket colour)
+        ctx.fillStyle = person.color;
+        ctx.fillRect(sx - 4, sy - 10, 8, 7);  // torso
+
+        // Head
+        ctx.fillStyle = '#f5c98b';  // skin tone
+        ctx.fillRect(sx - 3, sy - 17, 6, 6);
+
+        // Legs (alternate stride)
+        ctx.fillStyle = '#333';
+        ctx.fillRect(sx - 3,              sy - 3, 3, 6 + legSwing);   // left leg
+        ctx.fillRect(sx,                  sy - 3, 3, 6 - legSwing);   // right leg
+
+        // Arms
+        ctx.fillStyle = person.color;
+        ctx.fillRect(sx - 7, sy - 9, 3, 5);  // left arm
+        ctx.fillRect(sx + 4, sy - 9, 3, 5);  // right arm
+
+        ctx.globalAlpha = 1;
+    }
+
     drawTrack(ctx, groundY, scrollSpeed) {
         const offset = (this.cameraX * scrollSpeed) % 24;
         ctx.fillStyle = '#5C3D1E';
@@ -329,11 +612,16 @@ class TrainGame {
     }
 
     drawResult(ctx) {
-        const { result } = this.gameState;
+        const { result, endTime } = this.gameState;
+        // Wait 2.5 s after race ends so the crowd boarding animation plays out first
+        if (!endTime || Date.now() - endTime < 2500) return;
         const label = result === 'win' ? 'YOU WIN!' : result === 'lose' ? 'YOU LOSE' : 'TIE!';
         const color = result === 'win' ? '#2ecc71'  : result === 'lose' ? '#e74c3c'  : '#f1c40f';
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        // Fade in over 0.5 s
+        const fadeAlpha = Math.min((Date.now() - endTime - 2500) / 500, 1);
+        ctx.fillStyle = `rgba(0,0,0,${0.62 * fadeAlpha})`;
         ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        ctx.globalAlpha = fadeAlpha;
         ctx.font = 'bold 72px monospace';
         ctx.textAlign = 'center';
         ctx.fillStyle = color;
@@ -341,37 +629,59 @@ class TrainGame {
         ctx.font = '24px monospace';
         ctx.fillStyle = '#fff';
         ctx.fillText('Refresh to play again', this.canvas.width / 2, this.canvas.height / 2 + 40);
+        ctx.globalAlpha = 1;
         ctx.textAlign = 'left';
     }
 
     draw() {
-        const ctx = this.renderer.ctx;
-        const W = this.canvas.width, H = this.canvas.height;
+        const ctx   = this.renderer.ctx;
+        const W     = this.canvas.width, H = this.canvas.height;
+        const theme = this.themeAt(this.cameraX);
+        const tunnel = this.inTunnel(this.cameraX);
 
-        // Sky gradient — horizon raised to show more land
-        const sky = ctx.createLinearGradient(0, 0, 0, H);
-        sky.addColorStop(0,    '#6baed6');
-        sky.addColorStop(0.40, '#a8d5a2');  // greenish horizon
-        sky.addColorStop(0.48, '#8B7355');  // hard ground cut at ~48% (y≈192)
-        sky.addColorStop(1,    '#5e4a2a');
-        ctx.fillStyle = sky;
-        ctx.fillRect(0, 0, W, H);
+        // ── Background / sky ────────────────────────────────────────────────
+        if (theme === 'city') {
+            const sky = ctx.createLinearGradient(0, 0, 0, H);
+            sky.addColorStop(0,    '#0a0e1a');
+            sky.addColorStop(0.35, '#1a2a4a');
+            sky.addColorStop(0.48, '#607d8b'); // bridge deck colour
+            sky.addColorStop(1,    '#37474f');
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, W, H);
+        } else {
+            const sky = ctx.createLinearGradient(0, 0, 0, H);
+            sky.addColorStop(0,    '#6baed6');
+            sky.addColorStop(0.40, '#a8d5a2');
+            sky.addColorStop(0.48, '#8B7355');
+            sky.addColorStop(1,    '#5e4a2a');
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, W, H);
+        }
 
-        // Mountains (furthest back, slowest parallax)
+        // ── Background layer (mountains or city buildings) ───────────────────
         const mLayer = this.layers.find(l => l.name === 'mountains');
         for (const obj of mLayer.objects) {
             const sx = obj.x - this.cameraX * 0.3;
-            this.drawMountain(ctx, obj, sx);
+            if (obj.type === 'building') this.drawBuilding(ctx, obj, sx);
+            else                         this.drawMountain(ctx, obj, sx);
         }
 
-        // Tree clusters (mid parallax, between tracks)
-        const tLayer = this.layers.find(l => l.name === 'trees');
-        for (const obj of tLayer.objects) {
-            const sx = obj.x - this.cameraX * 0.6;
-            this.drawTreeCluster(ctx, obj, sx);
+        // ── City-specific ground, street & pillars ───────────────────────────
+        if (theme === 'city') {
+            this.drawCityGround(ctx);
+            for (const car of this.cars) this.drawCar(ctx, car);
         }
 
-        // Back track + opponent
+        // ── Sahara mid-layer: trees ──────────────────────────────────────────
+        if (theme === 'sahara') {
+            const tLayer = this.layers.find(l => l.name === 'trees');
+            for (const obj of tLayer.objects) {
+                const sx = obj.x - this.cameraX * 0.6;
+                this.drawTreeCluster(ctx, obj, sx);
+            }
+        }
+
+        // ── Tracks + trains (both themes) ───────────────────────────────────
         this.drawTrack(ctx, TRACK_BACK, 0.85);
         const opponentSX = this.worldToScreen(this.opponent.worldX);
         if (this.opponent.boosting) this.drawFlame(ctx, opponentSX, this.opponent.y + 24);
@@ -381,17 +691,19 @@ class TrainGame {
             opponentSX, this.opponent.y + 40
         );
 
-        // Rocks (near-ground, fast parallax)
-        const rLayer = this.layers.find(l => l.name === 'rocks');
-        for (const obj of rLayer.objects) {
-            const sx = obj.x - this.cameraX * 0.9;
-            this.renderer.renderSprite(SCENERY_SPRITES.rock, sx, obj.y);
+        // Sahara rocks
+        if (theme === 'sahara') {
+            const rLayer = this.layers.find(l => l.name === 'rocks');
+            for (const obj of rLayer.objects) {
+                const sx = obj.x - this.cameraX * 0.9;
+                this.renderer.renderSprite(SCENERY_SPRITES.rock, sx, obj.y);
+            }
         }
 
-        // Front track + player
         this.drawTrack(ctx, TRACK_FRONT, 1.0);
         this.drawFinishLine(ctx);
-        const trainSX = this.worldToScreen(this.train.worldX);
+
+        const trainSX         = this.worldToScreen(this.train.worldX);
         const activeBoostsNow = Math.min(this.boostTokens.filter(t => Date.now() - t < 1000).length, 4);
         if (activeBoostsNow > 0) this.drawFlame(ctx, trainSX, this.train.y + 24);
         this.renderer.renderSprite(TRAIN_SPRITES.idle[0], trainSX, this.train.y);
@@ -400,12 +712,21 @@ class TrainGame {
             trainSX, this.train.y + 40
         );
 
+        // ── Tunnel overlay (city only) ───────────────────────────────────────
+        if (theme === 'city') {
+            this.drawTunnelPortals(ctx);
+            if (tunnel) this.drawTunnelEffect(ctx);
+        }
+
+        // ── Result overlay (delayed 2.5 s, fades in) ────────────────────────
         if (this.gameState.result) this.drawResult(ctx);
 
-        // Boost indicator in UI
-        const activeBoosts = Math.min(this.boostTokens.filter(t => Date.now() - t < 1000).length, 4);
-        const boostPct     = activeBoosts * 5;
+        // ── Crowd boarding — drawn on TOP of result overlay ──────────────────
+        for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
 
+        // ── HUD ─────────────────────────────────────────────────────────────
+        const activeBoosts = activeBoostsNow;
+        const boostPct     = activeBoosts * 5;
         document.getElementById('speed').textContent =
             Math.round(this.train.vx * 10) / 10 + (activeBoosts > 0 ? ` 🔥+${boostPct}%` : '');
         document.getElementById('distance').textContent =
@@ -416,12 +737,12 @@ class TrainGame {
         const now = Date.now();
         const deltaTime = (now - this.lastTime) / 1000;
         this.lastTime = now;
-        if (this.gameState.isRunning) this.update(deltaTime);
+        this.update(deltaTime);  // always runs; handles post-race coasting & crowd internally
         this.draw();
         requestAnimationFrame(this.gameLoop);
     };
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    new TrainGame('gameCanvas');
+    window._game = new TrainGame('gameCanvas');
 });
