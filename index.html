@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Train Race - Side Scroller</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(to bottom, #87CEEB 0%, #E0F6FF 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 1200px;
+            height: 400px;
+            background: linear-gradient(to bottom, #87CEEB 0%, #90EE90 70%, #8B7355 70%, #8B7355 100%);
+            border: 3px solid #333;
+            overflow: hidden;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.3);
+        }
+
+        #gameCanvas {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-size: 18px;
+            font-weight: bold;
+            z-index: 10;
+        }
+
+        .stat {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="1200" height="400"></canvas>
+        <div id="ui">
+            <div class="stat">Speed: <span id="speed">0</span></div>
+            <div class="stat">Distance: <span id="distance">0</span></div>
+        </div>
+    </div>
+
+    <script src="sprites.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
