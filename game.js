@@ -102,9 +102,9 @@ class TrainGame {
         this.theme = Math.random() < 0.5 ? 'sahara' : 'city';
 
         this.layers = [
-            { name: 'mountains', speed: 0.3, objects: [], nextSpawnX: 0 },
-            { name: 'trees',     speed: 0.6, objects: [], nextSpawnX: 0 },
-            { name: 'rocks',     speed: 0.9, objects: [], nextSpawnX: 0 },
+            { name: 'mountains', speed: 0.3, objects: [] },
+            { name: 'trees',     speed: 0.6, objects: [] },
+            { name: 'rocks',     speed: 0.9, objects: [] },
         ];
 
         this.tunnelZones  = this.generateTunnelZones();
@@ -115,6 +115,13 @@ class TrainGame {
         this.generateInitialScenery();
         this.keys = {};
         this.setupInputListeners();
+
+        // ── Sound ──────────────────────────────────────────────────────────
+        this.sound = new Audio('assets/sounds/SteamEngineTractor_BW.60856.wav');
+        this.sound.loop = true;
+        this.sound.volume = 0;
+        this._soundPlaying = false;
+
         this.lastTime = Date.now();
         this.gameLoop();
     }
@@ -125,10 +132,13 @@ class TrainGame {
 
     generateInitialScenery() {
         for (const layer of this.layers) {
-            let x = 0;
-            while (x < this.canvas.width * 2) {
+            // Pre-populate from slightly off left edge to 3 screen-widths ahead
+            // (parallax-space coords match screen coords when cameraX === 0)
+            let x = -300;
+            const spawnUntil = this.canvas.width * 3;
+            while (x < spawnUntil) {
                 this.spawnObjectForLayer(layer, x);
-                x += Math.random() * 200 + 150;
+                x += 150 + Math.random() * 200;
             }
         }
     }
@@ -184,7 +194,7 @@ class TrainGame {
         for (let i = 0; i < count; i++) {
             const side = Math.random() < 0.5 ? 1 : -1;
             // Spread out to both sides of the stopped train, staggered depths
-            const ox      = TRAIN_WIDTH * 0.6 + 10 + Math.random() * 220;
+            const ox      = TRAIN_WIDTH + 40 + Math.random() * 300;  // 200–500 units out
             const onFront = Math.random() < 0.65;  // 65 % crowd the player's (front) track
             this.crowd.push({
                 x:       stoppedX + side * ox,
@@ -249,15 +259,21 @@ class TrainGame {
         this.boostTokens = [];
 
         this.layers = [
-            { name: 'mountains', speed: 0.3, objects: [], nextSpawnX: 0 },
-            { name: 'trees',     speed: 0.6, objects: [], nextSpawnX: 0 },
-            { name: 'rocks',     speed: 0.9, objects: [], nextSpawnX: 0 },
+            { name: 'mountains', speed: 0.3, objects: [] },
+            { name: 'trees',     speed: 0.6, objects: [] },
+            { name: 'rocks',     speed: 0.9, objects: [] },
         ];
         this.tunnelZones  = this.generateTunnelZones();
         this.cars         = [];
         this.crowd        = [];
         this.crowdSpawned = false;
         this.generateInitialScenery();
+
+        // Stop sound so it restarts cleanly on first keypress of new race
+        this.sound.pause();
+        this.sound.currentTime = 0;
+        this.sound.volume = 0;
+        this._soundPlaying = false;
     }
 
     setupInputListeners() {
@@ -317,7 +333,7 @@ class TrainGame {
             this.updateCars();
             // Wait until the train nearly stops before placing the crowd,
             // so people spawn at the actual stopped position, not the finish line.
-            if (!this.crowdSpawned && Math.abs(this.train.vx) < 0.3) this.spawnCrowd();
+            if (!this.crowdSpawned && Math.abs(this.train.vx) < 0.05) this.spawnCrowd();
             this.updateCrowd();
             return;
         }
@@ -347,19 +363,25 @@ class TrainGame {
         this.wheelFrame += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
         if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
 
-        // Parallax layer management
+        // Parallax layer management — all coordinates in parallax-space
+        // (obj.x is the screen-x when cameraX === 0; visible range = [parallaxOffset, parallaxOffset + W])
         for (const layer of this.layers) {
-            const layerScroll = this.cameraX * layer.speed;
-            layer.objects = layer.objects.filter(obj => {
-                const sx = obj.x - layerScroll;
-                return sx > -300 && sx < this.canvas.width + 300;
-            });
-            const rightmost = layer.objects.length > 0
-                ? Math.max(...layer.objects.map(o => o.x))
-                : this.train.worldX;
-            while (rightmost + layer.nextSpawnX < this.train.worldX + this.canvas.width * 1.5) {
-                this.spawnObjectForLayer(layer, rightmost + 150 + Math.random() * 200);
-                layer.nextSpawnX += 150 + Math.random() * 200;
+            const parallaxOffset = this.cameraX * layer.speed;
+
+            // Cull objects that have scrolled past the left edge (generous margin)
+            layer.objects = layer.objects.filter(obj => obj.x > parallaxOffset - 400);
+
+            // Find the rightmost object; fall back to the current left edge
+            let rightmostX = parallaxOffset;
+            for (const obj of layer.objects) {
+                if (obj.x > rightmostX) rightmostX = obj.x;
+            }
+
+            // Keep objects pre-spawned 3 screen-widths ahead so they never pop in
+            const spawnUntil = parallaxOffset + this.canvas.width * 3;
+            while (rightmostX < spawnUntil) {
+                rightmostX += 150 + Math.random() * 200;
+                this.spawnObjectForLayer(layer, rightmostX);
             }
         }
 
@@ -408,6 +430,36 @@ class TrainGame {
         this.updateCars();
         this.checkFinish();
         this.gameState.time += deltaTime;
+
+        // ── Sound: volume tracks speed; restart from silence when re-accelerating after stop ──
+        this.updateSound();
+    }
+
+    updateSound() {
+        const vx = this.train.vx;
+        if (vx <= 0.05) {
+            // At rest — fade to silence and reset playhead so next start feels fresh
+            if (!this.sound.paused) {
+                this.sound.volume = Math.max(0, this.sound.volume - 0.04);
+                if (this.sound.volume <= 0) {
+                    this.sound.pause();
+                    this.sound.currentTime = 0;
+                    this._soundPlaying = false;
+                }
+            }
+        } else {
+            // Moving — ramp volume up to match speed proportion
+            const targetVol = Math.min(vx / this.equilibriumSpeed, 1);
+            if (!this._soundPlaying) {
+                this.sound.volume = 0;
+                this.sound.currentTime = 0;
+                this.sound.play().catch(() => {});
+                this._soundPlaying = true;
+            }
+            // Smooth ramp up / down toward target
+            const delta = targetVol - this.sound.volume;
+            this.sound.volume = Math.min(1, Math.max(0, this.sound.volume + delta * 0.06));
+        }
     }
 
     // ─── Scenery draw helpers ──────────────────────────────────────────────
@@ -560,40 +612,60 @@ class TrainGame {
     }
 
     drawTunnelEffect(ctx) {
-        const W = this.canvas.width;
-        // Tunnel band — covers ONLY the train/track zone; sky above stays visible
-        const ceilY  = TRACK_BACK - TRAIN_HEIGHT - 5;  // just above the back train  (≈182)
-        const floorY = TRACK_FRONT + 28;                // just below the front track (≈306)
+        const W     = this.canvas.width;
+        const ceilY  = TRACK_BACK - TRAIN_HEIGHT - 5;  // ≈182 — just above the back train
+        const floorY = TRACK_FRONT + 28;                // ≈306 — just below the front track
+        const bandH  = floorY - ceilY;
 
-        // Dark tunnel interior
-        ctx.fillStyle = '#0f0f0f';
-        ctx.fillRect(0, ceilY, W, floorY - ceilY);
+        for (const zone of this.tunnelZones) {
+            const sx1 = this.worldToScreen(zone.startX);
+            const sx2 = this.worldToScreen(zone.endX);
+            if (sx2 < 0 || sx1 > W) continue;  // tunnel off-screen, skip
 
-        // Ceiling tile lines (near the top of the tunnel band)
-        ctx.strokeStyle = '#222';
-        ctx.lineWidth = 2;
-        for (let y = ceilY + 10; y < ceilY + 32; y += 10) {
+            const drawX = Math.max(0, sx1);
+            const drawW = Math.min(W, sx2) - drawX;
+            if (drawW <= 0) continue;
+
+            // Clip all drawing to this tunnel's screen rect
+            ctx.save();
             ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(W, y);
-            ctx.stroke();
-        }
+            ctx.rect(drawX, ceilY, drawW, bandH);
+            ctx.clip();
 
-        // Floor tile lines (near the bottom of the tunnel band)
-        for (let y = floorY - 8; y < floorY; y += 8) {
-            ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(W, y);
-            ctx.stroke();
-        }
+            // Dark interior
+            ctx.fillStyle = '#0f0f0f';
+            ctx.fillRect(drawX, ceilY, drawW, bandH);
 
-        // Dim overhead lamp glows spaced every 220 px
-        const lampOff = this.cameraX % 220;
-        ctx.fillStyle = 'rgba(255,230,100,0.13)';
-        for (let x = -lampOff + 110; x < W + 110; x += 220) {
-            ctx.beginPath();
-            ctx.ellipse(x, ceilY + 14, 30, 11, 0, 0, Math.PI * 2);
-            ctx.fill();
+            // Ceiling tile lines
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 2;
+            for (let y = ceilY + 10; y < ceilY + 32; y += 10) {
+                ctx.beginPath();
+                ctx.moveTo(drawX, y);
+                ctx.lineTo(drawX + drawW, y);
+                ctx.stroke();
+            }
+
+            // Floor tile lines
+            for (let y = floorY - 8; y < floorY; y += 8) {
+                ctx.beginPath();
+                ctx.moveTo(drawX, y);
+                ctx.lineTo(drawX + drawW, y);
+                ctx.stroke();
+            }
+
+            // Overhead lamp glows — world-aligned so they don't slide with camera
+            ctx.fillStyle = 'rgba(255,230,100,0.13)';
+            const lampStart = zone.startX + 110;
+            for (let wx = lampStart; wx < zone.endX; wx += 220) {
+                const lx = this.worldToScreen(wx);
+                if (lx < drawX || lx > drawX + drawW) continue;
+                ctx.beginPath();
+                ctx.ellipse(lx, ceilY + 14, 30, 11, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.restore();
         }
     }
 
@@ -780,8 +852,8 @@ class TrainGame {
 
         // ── Tunnel overlay (city only) ───────────────────────────────────────
         if (theme === 'city') {
-            this.drawTunnelPortals(ctx);
-            if (tunnel) this.drawTunnelEffect(ctx);
+            this.drawTunnelEffect(ctx);   // draws each visible tunnel zone clipped to its bounds
+            this.drawTunnelPortals(ctx);  // portals on top so jambs always crisp at the edges
         }
 
         // ── Result overlay (delayed 2.5 s, fades in) ────────────────────────
