@@ -85,7 +85,7 @@ class TrainGame {
             vx: 0,
             topSpeed: eq,          // average speed across the race
             slant: slantDir * 1.0, // speed offset at race start (±1 → range 3–5, avg 4)
-            boostBudget: FINISH_LINE_WORLD_X * 0.10,  // 10 % of race distance
+            boostBudget: FINISH_LINE_WORLD_X * 0.40,  // 40 % of race distance
             boosting: false,
             wheelFrame: 0,
             initialRampDone: false,
@@ -238,7 +238,7 @@ class TrainGame {
         this.opponent.worldX = 0;
         this.opponent.vx = 0;
         this.opponent.slant = slantDir * 1.0;
-        this.opponent.boostBudget = FINISH_LINE_WORLD_X * 0.10;
+        this.opponent.boostBudget = FINISH_LINE_WORLD_X * 0.40;
         this.opponent.boosting = false;
         this.opponent.wheelFrame = 0;
         this.opponent.initialRampDone = false;
@@ -315,7 +315,9 @@ class TrainGame {
             this.opponent.wheelFrame += Math.abs(this.opponent.vx) * this.wheelAnimationSpeed;
             if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
             this.updateCars();
-            if (!this.crowdSpawned) this.spawnCrowd();
+            // Wait until the train nearly stops before placing the crowd,
+            // so people spawn at the actual stopped position, not the finish line.
+            if (!this.crowdSpawned && Math.abs(this.train.vx) < 0.3) this.spawnCrowd();
             this.updateCrowd();
             return;
         }
