@@ -98,6 +98,9 @@ class TrainGame {
         this.wheelAnimationSpeed = 0.15;
         this.boostTokens = [];  // timestamps of space presses; each lasts 1 s, max 4 active
 
+        // Pick one theme for the whole race (re-randomised on restart)
+        this.theme = Math.random() < 0.5 ? 'sahara' : 'city';
+
         this.layers = [
             { name: 'mountains', speed: 0.3, objects: [], nextSpawnX: 0 },
             { name: 'trees',     speed: 0.6, objects: [], nextSpawnX: 0 },
@@ -131,18 +134,17 @@ class TrainGame {
     }
 
     themeAt(worldX) {
-        return Math.floor(worldX / SEGMENT_LEN) % 2 === 0 ? 'sahara' : 'city';
+        return this.theme;  // fixed for the whole race, re-randomised on restart
     }
 
     generateTunnelZones() {
+        if (this.theme !== 'city') return [];
         const zones = [];
-        // City segments live at SEGMENT_LEN*1 and SEGMENT_LEN*3
-        for (const segStart of [SEGMENT_LEN, SEGMENT_LEN * 3]) {
-            const n = 1 + Math.floor(Math.random() * 2);
-            for (let i = 0; i < n; i++) {
-                const cx = segStart + (SEGMENT_LEN / (n + 1)) * (i + 1) + (Math.random() - 0.5) * 250;
-                zones.push({ startX: cx, endX: cx + 380 + Math.random() * 320 });
-            }
+        // Spread 3–5 tunnels evenly across the full race distance
+        const n = 3 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < n; i++) {
+            const cx = (FINISH_LINE_WORLD_X / (n + 1)) * (i + 1) + (Math.random() - 0.5) * 500;
+            zones.push({ startX: cx, endX: cx + 380 + Math.random() * 320 });
         }
         return zones;
     }
@@ -225,9 +227,51 @@ class TrainGame {
         this.crowd = this.crowd.filter(p => !p.done);
     }
 
+    reset() {
+        this.theme = Math.random() < 0.5 ? 'sahara' : 'city';
+
+        this.train.worldX = 0;
+        this.train.vx = 0;
+        this.cameraX = 0;
+
+        const slantDir = Math.random() < 0.5 ? 1 : -1;
+        this.opponent.worldX = 0;
+        this.opponent.vx = 0;
+        this.opponent.slant = slantDir * 1.0;
+        this.opponent.boostBudget = FINISH_LINE_WORLD_X * 0.10;
+        this.opponent.boosting = false;
+        this.opponent.wheelFrame = 0;
+        this.opponent.initialRampDone = false;
+
+        this.gameState = { distance: 0, time: 0, isRunning: true, result: null, endTime: null };
+        this.raceStarted = false;
+        this.wheelFrame = 0;
+        this.boostTokens = [];
+
+        this.layers = [
+            { name: 'mountains', speed: 0.3, objects: [], nextSpawnX: 0 },
+            { name: 'trees',     speed: 0.6, objects: [], nextSpawnX: 0 },
+            { name: 'rocks',     speed: 0.9, objects: [], nextSpawnX: 0 },
+        ];
+        this.tunnelZones  = this.generateTunnelZones();
+        this.cars         = [];
+        this.crowd        = [];
+        this.crowdSpawned = false;
+        this.generateInitialScenery();
+    }
+
     setupInputListeners() {
         window.addEventListener('keydown', (e) => {
             if (e.repeat) return;   // ignore OS key-repeat events
+
+            // Any key restarts the game once the result overlay is visible
+            if (this.gameState.result && this.gameState.endTime &&
+                Date.now() - this.gameState.endTime > 2500) {
+                e.preventDefault();
+                this.reset();
+                return;
+            }
+
             this.keys[e.key] = true;
             this.raceStarted = true;
 
@@ -628,7 +672,7 @@ class TrainGame {
         ctx.fillText(label, this.canvas.width / 2, this.canvas.height / 2 - 10);
         ctx.font = '24px monospace';
         ctx.fillStyle = '#fff';
-        ctx.fillText('Refresh to play again', this.canvas.width / 2, this.canvas.height / 2 + 40);
+        ctx.fillText('Press any key to play again', this.canvas.width / 2, this.canvas.height / 2 + 40);
         ctx.globalAlpha = 1;
         ctx.textAlign = 'left';
     }
