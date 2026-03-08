@@ -507,7 +507,7 @@ class TrainGame {
             }
         } else {
             // Moving — ramp volume up to match speed proportion
-            const targetVol = Math.min(vx / this.equilibriumSpeed, 1);
+            const targetVol = Math.min(vx / this.equilibriumSpeed, 0.8);
             if (!this._soundPlaying) {
                 this.sound.volume = 0;
                 this.sound.currentTime = 0;
