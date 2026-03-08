@@ -548,6 +548,71 @@ class TrainGame {
         ctx.fillRect(x - p*9,       y,               p*2, p*2);
     }
 
+    // Draw one passenger cart body matching the locomotive's color language exactly.
+    // cx, cy = top-left corner (same convention as renderSprite / locomotive drawing).
+    // Spacing carts exactly TRAIN_WIDTH apart lets the transparent art-pixel edges on
+    // each side of every sprite create the natural ~8 px coupling gap for free.
+    drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame) {
+        const p  = 4;           // 1 art-pixel = 4 screen-pixels
+        const cw = TRAIN_WIDTH; // 160 screen px = 40 art px
+
+        // ── Left/right border columns (art col 1 and 38) ──────────────────────
+        ctx.fillStyle = '#404040';
+        ctx.fillRect(cx + p,       cy + p*2, p, p*8);  // left border
+        ctx.fillRect(cx + cw-p*2,  cy + p*2, p, p*8);  // right border
+
+        // ── Row 2: top stripe (matches sprite color 5) ─────────────────────────
+        ctx.fillStyle = stripeColor;
+        ctx.fillRect(cx + p*2, cy + p*2, cw - p*4, p);
+
+        // ── Rows 3–8: body background (lightGray) ─────────────────────────────
+        ctx.fillStyle = '#d0d0d0';
+        ctx.fillRect(cx + p*2, cy + p*3, cw - p*4, p*6);
+
+        // ── Rows 4–5: windows — 6 bays matching the sprite window pattern ──────
+        // Sprite windows at art cols: 4-7, 10-13, 16-19, 22-25, 28-31, 34-36
+        ctx.fillStyle = windowColor;
+        const winCols = [p*4, p*10, p*16, p*22, p*28, p*34];
+        for (let i = 0; i < winCols.length; i++) {
+            const ww = (i < 5) ? p*4 : p*3;  // last bay 3 art-px wide (matches sprite)
+            ctx.fillRect(cx + winCols[i], cy + p*4, ww, p*2);
+        }
+
+        // ── Rows 6–7: door panels — same bays, full art-pixel pattern ──────────
+        // Sprite doors at art cols: 3-7, 9-13, 15-19, 21-25, 27-31, 33-37
+        ctx.fillStyle = '#555';
+        const doorCols = [p*3, p*9, p*15, p*21, p*27, p*33];
+        for (let i = 0; i < doorCols.length; i++) {
+            const dw = (i < 5) ? p*5 : p*4;
+            ctx.fillRect(cx + doorCols[i], cy + p*6, dw, p*2);
+        }
+
+        // ── Row 8: lower body strip ────────────────────────────────────────────
+        ctx.fillStyle = '#d0d0d0';
+        ctx.fillRect(cx + p*2, cy + p*8, cw - p*4, p);
+
+        // ── Row 9: underframe (art col 1–38, all darkGray) ────────────────────
+        ctx.fillStyle = '#404040';
+        ctx.fillRect(cx + p*2, cy + p*9, cw - p*4, p);
+
+        // ── Row 10: axle attachment dots (matching sprite row 10) ─────────────
+        ctx.fillRect(cx + p*2,  cy + p*10, p, p);
+        ctx.fillRect(cx + p*36, cy + p*10, p, p);
+
+        // ── Wheels: animated, reuse locomotive wheel sprite ────────────────────
+        const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
+        this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*10);
+    }
+
+    // Draw as many carts as needed to fill past the left (off-screen) edge.
+    drawCarts(ctx, sx, cy, stripeColor, windowColor, wheelFrame) {
+        for (let i = 0; i < 12; i++) {
+            const cx = sx - (i + 1) * TRAIN_WIDTH;
+            if (cx + TRAIN_WIDTH < 0) break;  // fully off-screen left — stop
+            this.drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame);
+        }
+    }
+
     // ─── City draw helpers ─────────────────────────────────────────────────
 
     drawBuilding(ctx, obj, sx) {
@@ -837,7 +902,9 @@ class TrainGame {
         // ── Tracks + trains (both themes) ───────────────────────────────────
         this.drawTrack(ctx, TRACK_BACK, 0.85);
         const opponentSX = this.worldToScreen(this.opponent.worldX);
-        if (this.opponent.boosting) this.drawFlame(ctx, opponentSX, this.opponent.y + 24);
+        // Opponent carts trail behind (to the left of) the locomotive
+        this.drawCarts(ctx, opponentSX, this.opponent.y, '#3498db', '#2980b9', this.opponent.wheelFrame);
+        if (this.opponent.boosting) this.drawFlame(ctx, opponentSX, this.opponent.y + 44);
         this.renderer.renderSprite(OPPONENT_SPRITES.idle[0], opponentSX, this.opponent.y);
         this.renderer.renderSprite(
             OPPONENT_SPRITES.wheels[Math.floor(this.opponent.wheelFrame)],
@@ -858,7 +925,9 @@ class TrainGame {
 
         const trainSX         = this.worldToScreen(this.train.worldX);
         const activeBoostsNow = Math.min(this.boostTokens.filter(t => Date.now() - t < 1000).length, 4);
-        if (activeBoostsNow > 0) this.drawFlame(ctx, trainSX, this.train.y + 24);
+        // Player carts trail behind (to the left of) the locomotive
+        this.drawCarts(ctx, trainSX, this.train.y, '#e74c3c', '#3498db', this.wheelFrame);
+        if (activeBoostsNow > 0) this.drawFlame(ctx, trainSX, this.train.y + 44);
         this.renderer.renderSprite(TRAIN_SPRITES.idle[0], trainSX, this.train.y);
         this.renderer.renderSprite(
             TRAIN_SPRITES.wheels[Math.floor(this.wheelFrame)],
