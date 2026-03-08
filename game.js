@@ -390,6 +390,7 @@ class TrainGame {
             // so people spawn at the actual stopped position, not the finish line.
             if (!this.crowdSpawned && Math.abs(this.train.vx) < 0.05) this.spawnCrowd();
             this.updateCrowd();
+            this.updateSound();  // fade engine out as train coasts to a stop
             return;
         }
 
