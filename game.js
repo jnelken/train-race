@@ -116,11 +116,29 @@ class TrainGame {
         this.keys = {};
         this.setupInputListeners();
 
-        // ── Sound ──────────────────────────────────────────────────────────
-        this.sound = new Audio('assets/sounds/SteamEngineTractor_BW.60856.wav');
-        this.sound.loop = true;
-        this.sound.volume = 0;
-        this._soundPlaying = false;
+        // ── Engine sound: start / loop / end ──────────────────────────────
+        this.soundStart = new Audio('assets/sounds/steam_engine_start.wav');
+        this.soundLoop  = new Audio('assets/sounds/steam_engine_loop.wav');
+        this.soundEnd   = new Audio('assets/sounds/steam_engine_end.wav');
+        this.soundLoop.loop = true;
+        this._soundState = 'idle';  // 'idle' | 'starting' | 'running' | 'stopping'
+
+        // When the start clip finishes, cross into the loop
+        this.soundStart.addEventListener('ended', () => {
+            if (this._soundState !== 'starting') return;
+            if (this.train.vx > 0.05) {
+                this.soundLoop.volume = Math.min(this.train.vx / this.equilibriumSpeed, 0.8);
+                this.soundLoop.currentTime = 0;
+                this.soundLoop.play().catch(() => {});
+                this._soundState = 'running';
+            } else {
+                this._soundState = 'idle';
+            }
+        });
+        // When the end clip finishes, return to silence
+        this.soundEnd.addEventListener('ended', () => {
+            if (this._soundState === 'stopping') this._soundState = 'idle';
+        });
 
         this.winSound      = new Audio('assets/sounds/this_is_fairy_land.m4a');
         this.standClear    = new Audio('assets/sounds/stand_clear_of_closing_doors_please.m4a');
@@ -276,11 +294,11 @@ class TrainGame {
         this.crowdSpawned = false;
         this.generateInitialScenery();
 
-        // Stop engine sound so it restarts cleanly on first keypress of new race
-        this.sound.pause();
-        this.sound.currentTime = 0;
-        this.sound.volume = 0;
-        this._soundPlaying = false;
+        // Stop all engine sounds and reset state machine
+        this.soundStart.pause(); this.soundStart.currentTime = 0;
+        this.soundLoop.pause();  this.soundLoop.currentTime = 0;
+        this.soundEnd.pause();   this.soundEnd.currentTime = 0;
+        this._soundState = 'idle';
 
         // Cancel pending timers and remove ended-event listeners from win sequence
         this._winTimers.forEach(id => clearTimeout(id));
@@ -494,29 +512,56 @@ class TrainGame {
     }
 
     updateSound() {
-        const vx = this.train.vx;
-        if (vx <= 0.05) {
-            // At rest — fade to silence and reset playhead so next start feels fresh
-            if (!this.sound.paused) {
-                this.sound.volume = Math.max(0, this.sound.volume - 0.04);
-                if (this.sound.volume <= 0) {
-                    this.sound.pause();
-                    this.sound.currentTime = 0;
-                    this._soundPlaying = false;
+        const vx  = this.train.vx;
+        const vol = Math.min(vx / this.equilibriumSpeed, 0.8);
+
+        switch (this._soundState) {
+            case 'idle':
+                if (vx > 0.05) {
+                    this.soundStart.volume = vol;
+                    this.soundStart.currentTime = 0;
+                    this.soundStart.play().catch(() => {});
+                    this._soundState = 'starting';
                 }
-            }
-        } else {
-            // Moving — ramp volume up to match speed proportion
-            const targetVol = Math.min(vx / this.equilibriumSpeed, 0.8);
-            if (!this._soundPlaying) {
-                this.sound.volume = 0;
-                this.sound.currentTime = 0;
-                this.sound.play().catch(() => {});
-                this._soundPlaying = true;
-            }
-            // Smooth ramp up / down toward target
-            const delta = targetVol - this.sound.volume;
-            this.sound.volume = Math.min(1, Math.max(0, this.sound.volume + delta * 0.06));
+                break;
+
+            case 'starting':
+                // Track volume as speed builds during the startup clip;
+                // transition to loop is handled by the 'ended' listener above
+                this.soundStart.volume = vol;
+                if (vx <= 0.05) {
+                    // Stopped before start clip finished — abort cleanly
+                    this.soundStart.pause();
+                    this.soundStart.currentTime = 0;
+                    this._soundState = 'idle';
+                }
+                break;
+
+            case 'running':
+                this.soundLoop.volume = vol;
+                if (vx <= 0.05) {
+                    this.soundLoop.pause();
+                    this.soundLoop.currentTime = 0;
+                    this.soundEnd.volume = Math.max(this.soundLoop.volume, 0.1);
+                    this.soundEnd.currentTime = 0;
+                    this.soundEnd.play().catch(() => {});
+                    this._soundState = 'stopping';
+                }
+                break;
+
+            case 'stopping':
+                // Let end clip play out; fade its volume with speed
+                this.soundEnd.volume = Math.max(0, vol);
+                if (vx > 0.05) {
+                    // Re-accelerated before end clip finished — skip straight to loop
+                    this.soundEnd.pause();
+                    this.soundEnd.currentTime = 0;
+                    this.soundLoop.volume = vol;
+                    this.soundLoop.currentTime = 0;
+                    this.soundLoop.play().catch(() => {});
+                    this._soundState = 'running';
+                }
+                break;
         }
     }
 
