@@ -116,33 +116,34 @@ class TrainGame {
         this.keys = {};
         this.setupInputListeners();
 
-        // ── Engine sound: start / loop / end ──────────────────────────────
-        this.soundStart = new Audio('assets/sounds/steam_engine_start.wav');
-        this.soundLoop  = new Audio('assets/sounds/steam_engine_loop.wav');
-        this.soundEnd   = new Audio('assets/sounds/steam_engine_end.wav');
-        this.soundLoop.loop = true;
-        this._soundState = 'idle';  // 'idle' | 'starting' | 'running' | 'stopping'
+        // ── Engine sound: Web Audio API for gapless start / loop / end ───────
+        // AudioContext starts suspended in browsers; resume() is called on first
+        // user gesture (keydown / touchstart) so sounds are allowed to play.
+        this.audioCtx    = new (window.AudioContext || window.webkitAudioContext)();
+        this._engGain    = this.audioCtx.createGain();
+        this._engGain.gain.value = 0;
+        this._engGain.connect(this.audioCtx.destination);
+        this._engBufs    = {};     // 'start' | 'loop' | 'end' → AudioBuffer
+        this._engSrc     = null;   // currently playing AudioBufferSourceNode
+        this._engPending = null;   // pre-scheduled loop node (during 'starting' state)
+        this._soundState = 'idle'; // 'idle' | 'starting' | 'running' | 'stopping'
 
-        // When the start clip finishes, cross into the loop
-        this.soundStart.addEventListener('ended', () => {
-            if (this._soundState !== 'starting') return;
-            if (this.train.vx > 0.05) {
-                this.soundLoop.volume = Math.min(this.train.vx / this.equilibriumSpeed, 0.8);
-                this.soundLoop.currentTime = 0;
-                this.soundLoop.play().catch(() => {});
-                this._soundState = 'running';
-            } else {
-                this._soundState = 'idle';
-            }
-        });
-        // When the end clip finishes, return to silence
-        this.soundEnd.addEventListener('ended', () => {
-            if (this._soundState === 'stopping') this._soundState = 'idle';
+        // Fetch + decode all three engine clips up front so there is zero
+        // buffering delay when the race begins (even on the very first load).
+        ['start', 'loop', 'end'].forEach(name => {
+            fetch(`assets/sounds/steam_engine_${name}.wav`)
+                .then(r => r.arrayBuffer())
+                .then(ab => this.audioCtx.decodeAudioData(ab))
+                .then(buf => { this._engBufs[name] = buf; })
+                .catch(() => {});
         });
 
-        this.winSound      = new Audio('assets/sounds/this_is_fairy_land.m4a');
-        this.standClear    = new Audio('assets/sounds/stand_clear_of_closing_doors_please.m4a');
-        this.dingDong      = new Audio('assets/sounds/ding_dong.m4a');
+        // ── Win / arrival sounds (HTML Audio) ─────────────────────────────
+        this.winSound   = new Audio('assets/sounds/this_is_fairy_land.m4a');
+        this.standClear = new Audio('assets/sounds/stand_clear_of_closing_doors_please.m4a');
+        this.dingDong   = new Audio('assets/sounds/ding_dong.m4a');
+        // Preload so the first playback has no buffering gap
+        [this.winSound, this.standClear, this.dingDong].forEach(a => { a.preload = 'auto'; });
         this._winSoundPlayed   = false;
         this._winTimers        = [];  // setTimeout IDs — cancelled on reset
         this._winEndedHandlers = [];  // { audio, handler } pairs — removed on reset
@@ -294,10 +295,12 @@ class TrainGame {
         this.crowdSpawned = false;
         this.generateInitialScenery();
 
-        // Stop all engine sounds and reset state machine
-        this.soundStart.pause(); this.soundStart.currentTime = 0;
-        this.soundLoop.pause();  this.soundLoop.currentTime = 0;
-        this.soundEnd.pause();   this.soundEnd.currentTime = 0;
+        // Stop all engine sounds and reset Web Audio state machine
+        this._stopEngSrc(this._engSrc);
+        this._stopEngSrc(this._engPending);
+        this._engSrc     = null;
+        this._engPending = null;
+        this._engGain.gain.value = 0;
         this._soundState = 'idle';
 
         // Cancel pending timers and remove ended-event listeners from win sequence
@@ -324,6 +327,9 @@ class TrainGame {
                 return;
             }
 
+            // Unlock AudioContext on first user gesture (browser autoplay policy)
+            if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+
             this.keys[e.key] = true;
             this.raceStarted = true;  // first key press starts the race
 
@@ -349,6 +355,9 @@ class TrainGame {
                 this.reset();
                 return;
             }
+
+            // Unlock AudioContext on first user gesture (browser autoplay policy)
+            if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
 
             this.raceStarted = true;
             this.boostTokens.push(Date.now());
@@ -511,54 +520,106 @@ class TrainGame {
         this.updateSound();
     }
 
+    // ── Web Audio helpers ──────────────────────────────────────────────────
+
+    // Create a new AudioBufferSourceNode connected to the engine gain.
+    _makeEngSrc(name, loop = false) {
+        const buf = this._engBufs[name];
+        if (!buf) return null;
+        const src = this.audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.loop   = loop;
+        src.connect(this._engGain);
+        return src;
+    }
+
+    // Safely stop and disconnect a source node (ignores already-stopped errors).
+    _stopEngSrc(src) {
+        if (!src) return;
+        try { src.stop(); } catch (_) {}
+        src.disconnect();
+    }
+
     updateSound() {
         const vx  = this.train.vx;
         const vol = Math.min(vx / this.equilibriumSpeed, 0.8);
 
         switch (this._soundState) {
             case 'idle':
-                if (vx > 0.05) {
-                    this.soundStart.volume = vol;
-                    this.soundStart.currentTime = 0;
-                    this.soundStart.play().catch(() => {});
+                if (vx > 0.05 && this._engBufs.start && this._engBufs.loop) {
+                    const t       = this.audioCtx.currentTime;
+                    // Pre-schedule the loop to start exactly when the start clip ends
+                    // — sample-accurate, zero gap between the two clips.
+                    const startSrc = this._makeEngSrc('start');
+                    const loopSrc  = this._makeEngSrc('loop', /*loop=*/true);
+                    startSrc.start(t);
+                    loopSrc.start(t + this._engBufs.start.duration);
+
+                    // When start finishes, promote pending loop to active source
+                    startSrc.onended = () => {
+                        if (this._soundState === 'starting') {
+                            this._engSrc     = this._engPending;
+                            this._engPending = null;
+                            this._soundState = 'running';
+                        }
+                    };
+
+                    this._engGain.gain.value = vol;
+                    this._engSrc     = startSrc;
+                    this._engPending = loopSrc;
                     this._soundState = 'starting';
                 }
                 break;
 
             case 'starting':
-                // Track volume as speed builds during the startup clip;
-                // transition to loop is handled by the 'ended' listener above
-                this.soundStart.volume = vol;
+                this._engGain.gain.value = vol;
                 if (vx <= 0.05) {
-                    // Stopped before start clip finished — abort cleanly
-                    this.soundStart.pause();
-                    this.soundStart.currentTime = 0;
+                    // Stopped before start clip finished — cancel both nodes
+                    this._stopEngSrc(this._engSrc);
+                    this._stopEngSrc(this._engPending);
+                    this._engSrc     = null;
+                    this._engPending = null;
+                    this._engGain.gain.value = 0;
                     this._soundState = 'idle';
                 }
                 break;
 
             case 'running':
-                this.soundLoop.volume = vol;
+                this._engGain.gain.value = vol;
                 if (vx <= 0.05) {
-                    this.soundLoop.pause();
-                    this.soundLoop.currentTime = 0;
-                    this.soundEnd.volume = Math.max(this.soundLoop.volume, 0.1);
-                    this.soundEnd.currentTime = 0;
-                    this.soundEnd.play().catch(() => {});
+                    // Cross-fade loop → end clip
+                    this._stopEngSrc(this._engSrc);
+                    this._engSrc = null;
+                    if (this._engBufs.end) {
+                        const endSrc = this._makeEngSrc('end');
+                        this._engGain.gain.value = Math.max(vol, 0.1);
+                        endSrc.start();
+                        endSrc.onended = () => {
+                            if (this._soundState === 'stopping') {
+                                this._engGain.gain.value = 0;
+                                this._soundState = 'idle';
+                            }
+                        };
+                        this._engSrc = endSrc;
+                    } else {
+                        this._engGain.gain.value = 0;
+                    }
                     this._soundState = 'stopping';
                 }
                 break;
 
             case 'stopping':
-                // Let end clip play out; fade its volume with speed
-                this.soundEnd.volume = Math.max(0, vol);
+                this._engGain.gain.value = Math.max(vol, 0);
                 if (vx > 0.05) {
                     // Re-accelerated before end clip finished — skip straight to loop
-                    this.soundEnd.pause();
-                    this.soundEnd.currentTime = 0;
-                    this.soundLoop.volume = vol;
-                    this.soundLoop.currentTime = 0;
-                    this.soundLoop.play().catch(() => {});
+                    this._stopEngSrc(this._engSrc);
+                    this._engSrc = null;
+                    if (this._engBufs.loop) {
+                        const loopSrc = this._makeEngSrc('loop', /*loop=*/true);
+                        this._engGain.gain.value = vol;
+                        loopSrc.start();
+                        this._engSrc = loopSrc;
+                    }
                     this._soundState = 'running';
                 }
                 break;
