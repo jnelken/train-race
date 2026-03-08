@@ -125,8 +125,9 @@ class TrainGame {
         this.winSound      = new Audio('assets/sounds/this_is_fairy_land.m4a');
         this.standClear    = new Audio('assets/sounds/stand_clear_of_closing_doors_please.m4a');
         this.dingDong      = new Audio('assets/sounds/ding_dong.m4a');
-        this._winSoundPlayed = false;
-        this._winTimers      = [];  // setTimeout IDs so we can cancel on reset
+        this._winSoundPlayed   = false;
+        this._winTimers        = [];  // setTimeout IDs — cancelled on reset
+        this._winEndedHandlers = [];  // { audio, handler } pairs — removed on reset
 
         this.lastTime = Date.now();
         this.gameLoop();
@@ -281,9 +282,12 @@ class TrainGame {
         this.sound.volume = 0;
         this._soundPlaying = false;
 
-        // Cancel any pending win-sequence timers and stop all win sounds
+        // Cancel pending timers and remove ended-event listeners from win sequence
         this._winTimers.forEach(id => clearTimeout(id));
         this._winTimers = [];
+        this._winEndedHandlers.forEach(({ audio, handler }) =>
+            audio.removeEventListener('ended', handler));
+        this._winEndedHandlers = [];
         this.winSound.pause();   this.winSound.currentTime = 0;
         this.standClear.pause(); this.standClear.currentTime = 0;
         this.dingDong.pause();   this.dingDong.currentTime = 0;
@@ -345,16 +349,29 @@ class TrainGame {
                 this.gameState.endTime = Date.now();
                 if (this.gameState.result === 'win' && !this._winSoundPlayed) {
                     this._winSoundPlayed = true;
+
+                    // Chain: fairy land → (ends) +1s → stand clear → (ends) +1s → ding dong
+                    const onWinEnd = () => {
+                        this._winTimers.push(setTimeout(() => {
+                            this.standClear.currentTime = 0;
+                            this.standClear.play().catch(() => {});
+                        }, 1000));
+                    };
+                    const onStandClearEnd = () => {
+                        this._winTimers.push(setTimeout(() => {
+                            this.dingDong.currentTime = 0;
+                            this.dingDong.play().catch(() => {});
+                        }, 1000));
+                    };
+                    this.winSound.addEventListener('ended', onWinEnd, { once: true });
+                    this.standClear.addEventListener('ended', onStandClearEnd, { once: true });
+                    this._winEndedHandlers.push(
+                        { audio: this.winSound,   handler: onWinEnd },
+                        { audio: this.standClear, handler: onStandClearEnd },
+                    );
+
                     this.winSound.currentTime = 0;
                     this.winSound.play().catch(() => {});
-                    this._winTimers.push(setTimeout(() => {
-                        this.standClear.currentTime = 0;
-                        this.standClear.play().catch(() => {});
-                    }, 1000));
-                    this._winTimers.push(setTimeout(() => {
-                        this.dingDong.currentTime = 0;
-                        this.dingDong.play().catch(() => {});
-                    }, 2000));
                 }
             }
         }
