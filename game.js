@@ -9,6 +9,22 @@ const SEGMENT_LEN  = 2500; // world units per theme segment (sahara → city →
 const STREET_Y     = 358;  // city street surface y
 const PILLAR_GAP   = 120;  // bridge support spacing
 
+// ─── Mountain theme constants ──────────────────────────────────────────────
+const MOUNTAIN_PEAK_HEIGHT = 120;               // max elevation in pixels
+const MOUNTAIN_CENTER      = FINISH_LINE_WORLD_X / 2;  // 5000
+const MOUNTAIN_SIGMA       = 2200;              // bell curve width
+const MOUNTAIN_GRAVITY     = 4.0;               // slope effect on speed
+
+function getMountainElevation(worldX) {
+    const dx = worldX - MOUNTAIN_CENTER;
+    return MOUNTAIN_PEAK_HEIGHT * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
+}
+
+function getMountainSlope(worldX) {
+    const dx = worldX - MOUNTAIN_CENTER;
+    return -getMountainElevation(worldX) * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
+}
+
 // ─── Procedural scenery factories ────────────────────────────────────────────
 
 function makeMountain(x) {
@@ -56,11 +72,29 @@ function makeBuilding(x) {
     };
 }
 
+function makeAlpinePeak(x) {
+    const w       = 120 + Math.random() * 180;
+    const h       = 80  + Math.random() * 120;
+    const peakX   = w * (0.3 + Math.random() * 0.4);
+    const hue     = 210 + Math.random() * 20;     // blue-gray
+    const sat     = 15  + Math.random() * 20;
+    const lgt     = 50  + Math.random() * 15;
+    return {
+        x, type: 'alpine',
+        w, h, peakX,
+        color:  `hsl(${hue},${sat}%,${lgt}%)`,
+        shadow: `hsl(${hue},${sat * 0.85}%,${lgt - 14}%)`,
+        snowH:  h * (0.15 + Math.random() * 0.15),  // always snow-capped
+    };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TrainGame {
     constructor(canvasId) {
         this.canvas = document.getElementById(canvasId);
+        this.resizeCanvas();
+        window.addEventListener('resize', () => this.resizeCanvas());
         this.renderer = new SpriteRenderer(this.canvas, 4);
 
         this.train = {
@@ -73,6 +107,7 @@ class TrainGame {
         };
 
         this.cameraX = 0;
+        this.cameraY = 0;
 
         const eq = this.train.acceleration / (1 - this.train.friction); // 4.0
         this.equilibriumSpeed = eq;
@@ -96,10 +131,11 @@ class TrainGame {
 
         this.wheelFrame = 0;
         this.wheelAnimationSpeed = 0.15;
+        this.paused = false;
         this.boostTokens = [];  // timestamps of space presses; each lasts 1 s, max 4 active
 
         // Pick one theme for the whole race (re-randomised on restart)
-        this.theme = Math.random() < 0.5 ? 'sahara' : 'city';
+        { const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain'; }
 
         this.layers = [
             { name: 'mountains', speed: 0.3, objects: [] },
@@ -152,8 +188,26 @@ class TrainGame {
         this.gameLoop();
     }
 
+    resizeCanvas() {
+        const container = this.canvas.parentElement;
+        const cw = container.clientWidth;
+        const ch = container.clientHeight;
+        // Keep internal height at 400 (all Y constants depend on it).
+        // Scale width to match container aspect ratio so pixels stay square.
+        this.canvas.height = 400;
+        this.canvas.width = Math.round(cw / ch * 400);
+    }
+
     worldToScreen(worldX) {
         return worldX - this.cameraX + this.canvas.width / 2 - TRAIN_WIDTH / 2;
+    }
+
+    getElevation(worldX) {
+        return this.theme === 'mountain' ? getMountainElevation(worldX) : 0;
+    }
+
+    getSlope(worldX) {
+        return this.theme === 'mountain' ? getMountainSlope(worldX) : 0;
     }
 
     generateInitialScenery() {
@@ -195,6 +249,10 @@ class TrainGame {
             if      (layer.name === 'mountains') layer.objects.push(makeMountain(x));
             else if (layer.name === 'trees')     layer.objects.push(makeTreeCluster(x));
             else                                 layer.objects.push(makeRock(x));
+        } else if (theme === 'mountain') {
+            if      (layer.name === 'mountains') layer.objects.push(makeAlpinePeak(x));
+            else if (layer.name === 'trees')     layer.objects.push(makeTreeCluster(x));
+            else                                 layer.objects.push(makeRock(x));
         } else {
             // city: only background layer gets buildings; other layers skipped (city ground is procedural)
             if (layer.name === 'mountains') layer.objects.push(makeBuilding(x));
@@ -222,9 +280,11 @@ class TrainGame {
             // Spread out to both sides of the stopped train, staggered depths
             const ox      = TRAIN_WIDTH + 40 + Math.random() * 300;  // 200–500 units out
             const onFront = Math.random() < 0.65;  // 65 % crowd the player's (front) track
+            const crowdWorldX = stoppedX + side * ox;
+            const elevOffset = this.getElevation(crowdWorldX);
             this.crowd.push({
-                x:       stoppedX + side * ox,
-                trackY:  onFront ? TRACK_FRONT - 20 : TRACK_BACK - 20,
+                x:       crowdWorldX,
+                trackY:  (onFront ? TRACK_FRONT - 20 : TRACK_BACK - 20) - elevOffset,
                 targetX: stoppedX + (Math.random() - 0.5) * TRAIN_WIDTH * 0.6,
                 color:   `hsl(${Math.floor(Math.random() * 360)},70%,60%)`,
                 phase:   Math.random() * Math.PI * 2,
@@ -264,11 +324,12 @@ class TrainGame {
     }
 
     reset() {
-        this.theme = Math.random() < 0.5 ? 'sahara' : 'city';
+        { const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain'; }
 
         this.train.worldX = 0;
         this.train.vx = 0;
         this.cameraX = 0;
+        this.cameraY = 0;
 
         const slantDir = Math.random() < 0.5 ? 1 : -1;
         this.opponent.worldX = 0;
@@ -281,6 +342,7 @@ class TrainGame {
 
         this.gameState = { distance: 0, time: 0, isRunning: true, result: null, endTime: null };
         this.raceStarted = false;
+        this.paused = false;
         this.wheelFrame = 0;
         this.boostTokens = [];
 
@@ -315,29 +377,60 @@ class TrainGame {
         this._winSoundPlayed = false;
     }
 
+    togglePause() {
+        if (this.gameState.result) return;
+        this.paused = !this.paused;
+        const btn = document.getElementById('pauseBtn');
+        if (this.paused) {
+            btn.textContent = '\u25B6';
+            btn.classList.add('paused');
+        } else {
+            btn.textContent = '\u23F8';
+            btn.classList.remove('paused');
+            this.lastTime = Date.now();
+        }
+    }
+
+    addBoost() {
+        if (this.paused) return;
+        if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+        this.raceStarted = true;
+        this.boostTokens.push(Date.now());
+    }
+
+    resetUI() {
+        const btn = document.getElementById('pauseBtn');
+        btn.textContent = '\u23F8';
+        btn.classList.remove('paused');
+    }
+
     setupInputListeners() {
         window.addEventListener('keydown', (e) => {
-            if (e.repeat) return;   // ignore OS key-repeat events
+            if (e.repeat) return;
 
-            // Any key restarts the game once the result overlay is visible
             if (this.gameState.result && this.gameState.endTime &&
                 Date.now() - this.gameState.endTime > 2500) {
                 e.preventDefault();
                 this.reset();
+                this.resetUI();
                 return;
             }
 
-            // Unlock AudioContext on first user gesture (browser autoplay policy)
+            if (e.key === 'p' || e.key === 'P') {
+                this.togglePause();
+                return;
+            }
+
+            if (this.paused) return;
+
             if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
 
             this.keys[e.key] = true;
-            this.raceStarted = true;  // first key press starts the race
+            this.raceStarted = true;
 
-            // ArrowLeft / A: manual braking (only directional key still needed)
             if (e.key === 'ArrowLeft' || e.key === 'a') {
                 this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.equilibriumSpeed * 0.5);
             }
-            // Space bar: boost token (5 % per press, up to 4 active = +20 %)
             if (e.key === ' ') {
                 e.preventDefault();
                 this.boostTokens.push(Date.now());
@@ -345,22 +438,57 @@ class TrainGame {
         });
         window.addEventListener('keyup', (e) => { this.keys[e.key] = false; });
 
-        // ── Touch / iPad support: tap = boost (space bar alias) ───────────────
+        // ── Touch / iPad support: tap canvas = boost ──────────────────────────
         this.canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault();  // stop scroll / double-tap zoom
+            e.preventDefault();
 
-            // Tap restarts if result overlay is visible
             if (this.gameState.result && this.gameState.endTime &&
                 Date.now() - this.gameState.endTime > 2500) {
                 this.reset();
+                this.resetUI();
                 return;
             }
 
-            // Unlock AudioContext on first user gesture (browser autoplay policy)
-            if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+            this.addBoost();
+        }, { passive: false });
 
-            this.raceStarted = true;
-            this.boostTokens.push(Date.now());
+        // ── UI Buttons ────────────────────────────────────────────────────────
+        const restartBtn   = document.getElementById('restartBtn');
+        const nextLevelBtn = document.getElementById('nextLevelBtn');
+        const pauseBtn     = document.getElementById('pauseBtn');
+        const boostBtn     = document.getElementById('boostBtn');
+
+        restartBtn.addEventListener('click', () => {
+            if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+            this.reset();
+            this.resetUI();
+        });
+
+        nextLevelBtn.addEventListener('click', () => {
+            if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+            this.reset();
+            this.resetUI();
+        });
+
+        pauseBtn.addEventListener('click', () => { this.togglePause(); });
+
+        // Boost button — mouse
+        boostBtn.addEventListener('mousedown', () => {
+            this.addBoost();
+            boostBtn.classList.add('active');
+        });
+        boostBtn.addEventListener('mouseup', () => { boostBtn.classList.remove('active'); });
+        boostBtn.addEventListener('mouseleave', () => { boostBtn.classList.remove('active'); });
+
+        // Boost button — touch
+        boostBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            this.addBoost();
+            boostBtn.classList.add('active');
+        }, { passive: false });
+        boostBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            boostBtn.classList.remove('active');
         }, { passive: false });
     }
 
@@ -401,15 +529,24 @@ class TrainGame {
     }
 
     update(deltaTime) {
+        if (this.paused) return;
+
         // ── Post-race: coast to stop, animate crowd, keep cars moving ──────────
         if (!this.gameState.isRunning) {
             this.train.vx    *= this.train.friction;
+            this.train.vx    -= this.getSlope(this.train.worldX) * MOUNTAIN_GRAVITY;
+            this.train.vx     = Math.max(this.train.vx, 0);
             this.train.worldX += this.train.vx;
+            this.train.y      = TRACK_FRONT - TRAIN_HEIGHT - this.getElevation(this.train.worldX);
             this.cameraX     += (this.train.worldX - this.cameraX) * CAMERA_LERP;
+            this.cameraY     += (this.getElevation(this.train.worldX) - this.cameraY) * CAMERA_LERP;
             this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
             if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
             this.opponent.vx    *= this.train.friction;
+            this.opponent.vx    -= this.getSlope(this.opponent.worldX) * MOUNTAIN_GRAVITY;
+            this.opponent.vx     = Math.max(this.opponent.vx, 0);
             this.opponent.worldX += this.opponent.vx;
+            this.opponent.y      = TRACK_BACK - TRAIN_HEIGHT - this.getElevation(this.opponent.worldX);
             this.opponent.wheelFrame += Math.abs(this.opponent.vx) * this.wheelAnimationSpeed;
             if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
             this.updateCars();
@@ -440,8 +577,14 @@ class TrainGame {
         if (this.keys['ArrowLeft'] || this.keys['a']) {
             this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.equilibriumSpeed * 0.5);
         }
+        // Mountain slope gravity: uphill slows, downhill speeds
+        const playerSlope = this.getSlope(this.train.worldX);
+        this.train.vx -= playerSlope * MOUNTAIN_GRAVITY;
+        this.train.vx = Math.max(this.train.vx, 0.2);  // never roll backwards
         this.train.worldX += this.train.vx;
         this.cameraX += (this.train.worldX - this.cameraX) * CAMERA_LERP;
+        this.cameraY += (this.getElevation(this.train.worldX) - this.cameraY) * CAMERA_LERP;
+        this.train.y = TRACK_FRONT - TRAIN_HEIGHT - this.getElevation(this.train.worldX);
 
         if (this.train.vx > 0) this.gameState.distance += this.train.vx;
 
@@ -494,10 +637,18 @@ class TrainGame {
         const tooFarAhead  =  this.canvas.width * 0.55;
         const tooFarBehind = -this.canvas.width * 0.55;
 
+        // Scale target speed by the same ratio gravity imposes on the player.
+        // Player equilibrium = (accel - slope*G) / (1-friction), so the ratio
+        // vs flat ground is (1 - slope * G / accel).  Apply this to the opponent
+        // so both trains slow/speed proportionally on slopes.
+        const oppSlope = this.getSlope(this.opponent.worldX);
+        const slopeMultiplier = Math.max(1 - oppSlope * MOUNTAIN_GRAVITY / this.train.acceleration, 0.05);
+
         let targetSpeed;
         if      (gap > tooFarAhead)  targetSpeed = oppEffectiveTop * 0.4;
         else if (gap < tooFarBehind) targetSpeed = Math.max(this.train.vx + 1.5, oppEffectiveTop);
         else                         targetSpeed = oppEffectiveTop;
+        targetSpeed *= slopeMultiplier;
 
         const diff = targetSpeed - this.opponent.vx;
         if (!this.opponent.initialRampDone) {
@@ -507,8 +658,10 @@ class TrainGame {
             const maxDelta = this.equilibriumSpeed / (15 * 60);
             this.opponent.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
         }
+        this.opponent.vx = Math.max(this.opponent.vx, 0.2);
 
         this.opponent.worldX    += this.opponent.vx;
+        this.opponent.y = TRACK_BACK - TRAIN_HEIGHT - this.getElevation(this.opponent.worldX);
         this.opponent.wheelFrame += this.opponent.vx * this.wheelAnimationSpeed;
         if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
 
@@ -701,7 +854,7 @@ class TrainGame {
     // cx, cy = top-left corner (same convention as renderSprite / locomotive drawing).
     // Spacing carts exactly TRAIN_WIDTH apart lets the transparent art-pixel edges on
     // each side of every sprite create the natural ~8 px coupling gap for free.
-    drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame) {
+    drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame, isCity) {
         const p  = 4;           // 1 art-pixel = 4 screen-pixels
         const cw = TRAIN_WIDTH; // 160 screen px = 40 art px
 
@@ -745,20 +898,41 @@ class TrainGame {
         ctx.fillRect(cx + p*2, cy + p*9, cw - p*4, p);
 
         // ── Row 10: axle attachment dots (matching sprite row 10) ─────────────
-        ctx.fillRect(cx + p*2,  cy + p*10, p, p);
-        ctx.fillRect(cx + p*36, cy + p*10, p, p);
+        if (!isCity) {
+            ctx.fillRect(cx + p*2,  cy + p*10, p, p);
+            ctx.fillRect(cx + p*36, cy + p*10, p, p);
 
-        // ── Wheels: animated, reuse locomotive wheel sprite ────────────────────
-        const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
-        this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*10);
+            // ── Wheels: animated, reuse locomotive wheel sprite ──────────────────
+            const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
+            this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*10);
+        }
     }
 
     // Draw as many carts as needed to fill past the left (off-screen) edge.
-    drawCarts(ctx, sx, cy, stripeColor, windowColor, wheelFrame) {
+    drawCarts(ctx, sx, cy, stripeColor, windowColor, wheelFrame, isCity) {
         for (let i = 0; i < 12; i++) {
             const cx = sx - (i + 1) * TRAIN_WIDTH;
             if (cx + TRAIN_WIDTH < 0) break;  // fully off-screen left — stop
-            this.drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame);
+            this.drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame, isCity);
+        }
+    }
+
+    // Draw carts following the mountain curve — each cart at its own elevation/rotation.
+    drawMountainCarts(ctx, trainWorldX, baseTrackY, stripeColor, windowColor, wheelFrame) {
+        for (let i = 0; i < 12; i++) {
+            const cartWorldX = trainWorldX - (i + 1) * TRAIN_WIDTH;
+            const cartElev = getMountainElevation(cartWorldX);
+            const cartSlope = getMountainSlope(cartWorldX);
+            const cartSX = this.worldToScreen(cartWorldX);
+            const cartY = baseTrackY - TRAIN_HEIGHT - cartElev;
+            if (cartSX + TRAIN_WIDTH < 0) break;
+            const angle = -Math.atan(cartSlope);
+            ctx.save();
+            ctx.translate(cartSX + TRAIN_WIDTH / 2, cartY + TRAIN_HEIGHT / 2);
+            ctx.rotate(angle);
+            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT / 2);
+            this.drawSingleCart(ctx, 0, 0, stripeColor, windowColor, wheelFrame, false);
+            ctx.restore();
         }
     }
 
@@ -823,6 +997,78 @@ class TrainGame {
         ctx.fillStyle = '#b0bec5';
         ctx.fillRect(0, STREET_Y - 32, W, 2);
         ctx.fillRect(0, STREET_Y - 4,  W, 2);
+    }
+
+    drawMountainGround(ctx) {
+        const W = this.canvas.width, H = this.canvas.height;
+        const step = 4;
+
+        // Green/brown alpine gradient fill following the elevation curve
+        const grad = ctx.createLinearGradient(0, HORIZON_Y - MOUNTAIN_PEAK_HEIGHT, 0, H);
+        grad.addColorStop(0,   '#5a7a3a');  // alpine green at peaks
+        grad.addColorStop(0.3, '#6b8c42');  // meadow green
+        grad.addColorStop(0.6, '#8B7355');  // brown earth
+        grad.addColorStop(1,   '#5e4a2a');  // dark earth
+
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        // Trace the curve across screen width — use the FRONT track as ground reference
+        for (let sx = 0; sx <= W; sx += step) {
+            const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+            const elev = getMountainElevation(worldX);
+            const gy = TRACK_FRONT + 6 - elev;  // ground just below front track
+            if (sx === 0) ctx.moveTo(sx, gy);
+            else          ctx.lineTo(sx, gy);
+        }
+        ctx.lineTo(W, H);
+        ctx.lineTo(0, H);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    drawMountainTrack(ctx, baseGroundY) {
+        const W = this.canvas.width;
+        const step = 4;
+
+        // Collect points along the track curve
+        const points = [];
+        for (let sx = -8; sx <= W + 8; sx += step) {
+            const wx = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+            const elev = getMountainElevation(wx);
+            const gy = baseGroundY - elev;
+            const slope = getMountainSlope(wx);
+            points.push({ sx, gy, slope });
+        }
+
+        // Ties every 24px (world-aligned)
+        const tieOffset = this.cameraX % 24;
+        ctx.fillStyle = '#5C3D1E';
+        for (let sx = -tieOffset; sx < W + 24; sx += 24) {
+            const wx = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+            const elev = getMountainElevation(wx);
+            const gy = baseGroundY - elev;
+            const slope = getMountainSlope(wx);
+            const angle = Math.atan(slope);
+            ctx.save();
+            ctx.translate(sx, gy);
+            ctx.rotate(-angle);
+            ctx.fillRect(-3, -5, 7, 5);
+            ctx.restore();
+        }
+
+        // Rails as connected line segments
+        ctx.strokeStyle = '#A0A0A0';
+        ctx.lineWidth = 2;
+        for (const railOffset of [-6, -2]) {
+            ctx.beginPath();
+            for (let i = 0; i < points.length; i++) {
+                const x = points[i].sx;
+                const y = points[i].gy + railOffset;
+                if (i === 0) ctx.moveTo(x, y);
+                else         ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
     }
 
     drawCar(ctx, car) {
@@ -1015,6 +1261,15 @@ class TrainGame {
             sky.addColorStop(1,    '#37474f');
             ctx.fillStyle = sky;
             ctx.fillRect(0, 0, W, H);
+        } else if (theme === 'mountain') {
+            const sky = ctx.createLinearGradient(0, 0, 0, H);
+            sky.addColorStop(0,    '#3a8fd6');  // bright alpine blue
+            sky.addColorStop(0.30, '#6bb5e8');  // light blue
+            sky.addColorStop(0.48, '#a8d5a2');  // green-tinged horizon
+            sky.addColorStop(0.55, '#6b8c42');  // meadow
+            sky.addColorStop(1,    '#4a6a2a');  // dark green
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, W, H);
         } else {
             const sky = ctx.createLinearGradient(0, 0, 0, H);
             sky.addColorStop(0,    '#6baed6');
@@ -1025,12 +1280,19 @@ class TrainGame {
             ctx.fillRect(0, 0, W, H);
         }
 
+        // ── Vertical camera shift for mountain theme ─────────────────────────
+        if (theme === 'mountain') {
+            ctx.save();
+            ctx.translate(0, this.cameraY);
+        }
+
         // ── Background layer (mountains or city buildings) ───────────────────
         const mLayer = this.layers.find(l => l.name === 'mountains');
         for (const obj of mLayer.objects) {
             const sx = obj.x - this.cameraX * 0.3;
-            if (obj.type === 'building') this.drawBuilding(ctx, obj, sx);
-            else                         this.drawMountain(ctx, obj, sx);
+            if (obj.type === 'building')     this.drawBuilding(ctx, obj, sx);
+            else if (obj.type === 'alpine')  this.drawMountain(ctx, obj, sx);
+            else                             this.drawMountain(ctx, obj, sx);
         }
 
         // ── City-specific ground, street & pillars ───────────────────────────
@@ -1039,8 +1301,13 @@ class TrainGame {
             for (const car of this.cars) this.drawCar(ctx, car);
         }
 
-        // ── Sahara mid-layer: trees ──────────────────────────────────────────
-        if (theme === 'sahara') {
+        // ── Mountain ground ──────────────────────────────────────────────────
+        if (theme === 'mountain') {
+            this.drawMountainGround(ctx);
+        }
+
+        // ── Sahara/mountain mid-layer: trees ─────────────────────────────────
+        if (theme === 'sahara' || theme === 'mountain') {
             const tLayer = this.layers.find(l => l.name === 'trees');
             for (const obj of tLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.6;
@@ -1049,19 +1316,43 @@ class TrainGame {
         }
 
         // ── Tracks + trains (both themes) ───────────────────────────────────
-        this.drawTrack(ctx, TRACK_BACK, 0.85);
-        const opponentSX = this.worldToScreen(this.opponent.worldX);
-        // Opponent carts trail behind (to the left of) the locomotive
-        this.drawCarts(ctx, opponentSX, this.opponent.y, '#3498db', '#2980b9', this.opponent.wheelFrame);
-        if (this.opponent.boosting) this.drawFlame(ctx, opponentSX, this.opponent.y + 44);
-        this.renderer.renderSprite(OPPONENT_SPRITES.idle[0], opponentSX, this.opponent.y);
-        this.renderer.renderSprite(
-            OPPONENT_SPRITES.wheels[Math.floor(this.opponent.wheelFrame)],
-            opponentSX, this.opponent.y + 40
-        );
+        const isCity = theme === 'city';
+        // Hover bob for city theme (no wheels, trains float)
+        const oppBob  = isCity ? Math.sin(Date.now() / 400) * 2.5 : 0;
+        const trainBob = isCity ? Math.sin(Date.now() / 400 + 1) * 2.5 : 0;
 
-        // Sahara rocks
-        if (theme === 'sahara') {
+        if (theme === 'mountain') this.drawMountainTrack(ctx, TRACK_BACK);
+        else                     this.drawTrack(ctx, TRACK_BACK, 0.85);
+        const opponentSX = this.worldToScreen(this.opponent.worldX);
+        const oppY = this.opponent.y + oppBob;
+        if (theme === 'mountain') {
+            this.drawMountainCarts(ctx, this.opponent.worldX, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
+            const oppSlopeAngle = -Math.atan(this.getSlope(this.opponent.worldX));
+            ctx.save();
+            ctx.translate(opponentSX + TRAIN_WIDTH / 2, oppY + TRAIN_HEIGHT / 2);
+            ctx.rotate(oppSlopeAngle);
+            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT / 2);
+            if (this.opponent.boosting) this.drawFlame(ctx, 0, 44);
+            this.renderer.renderSprite(OPPONENT_SPRITES.idle[0], 0, 0);
+            this.renderer.renderSprite(
+                OPPONENT_SPRITES.wheels[Math.floor(this.opponent.wheelFrame)],
+                0, 40
+            );
+            ctx.restore();
+        } else {
+            this.drawCarts(ctx, opponentSX, oppY, '#3498db', '#2980b9', this.opponent.wheelFrame, isCity);
+            if (this.opponent.boosting) this.drawFlame(ctx, opponentSX, oppY + 44);
+            this.renderer.renderSprite(OPPONENT_SPRITES.idle[0], opponentSX, oppY);
+            if (!isCity) {
+                this.renderer.renderSprite(
+                    OPPONENT_SPRITES.wheels[Math.floor(this.opponent.wheelFrame)],
+                    opponentSX, oppY + 40
+                );
+            }
+        }
+
+        // Sahara/mountain rocks
+        if (theme === 'sahara' || theme === 'mountain') {
             const rLayer = this.layers.find(l => l.name === 'rocks');
             for (const obj of rLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.9;
@@ -1069,19 +1360,38 @@ class TrainGame {
             }
         }
 
-        this.drawTrack(ctx, TRACK_FRONT, 1.0);
+        if (theme === 'mountain') this.drawMountainTrack(ctx, TRACK_FRONT);
+        else                     this.drawTrack(ctx, TRACK_FRONT, 1.0);
         this.drawFinishLine(ctx);
 
         const trainSX         = this.worldToScreen(this.train.worldX);
+        const trainY          = this.train.y + trainBob;
         const activeBoostsNow = Math.min(this.boostTokens.filter(t => Date.now() - t < 1000).length, 4);
-        // Player carts trail behind (to the left of) the locomotive
-        this.drawCarts(ctx, trainSX, this.train.y, '#e74c3c', '#3498db', this.wheelFrame);
-        if (activeBoostsNow > 0) this.drawFlame(ctx, trainSX, this.train.y + 44);
-        this.renderer.renderSprite(TRAIN_SPRITES.idle[0], trainSX, this.train.y);
-        this.renderer.renderSprite(
-            TRAIN_SPRITES.wheels[Math.floor(this.wheelFrame)],
-            trainSX, this.train.y + 40
-        );
+        if (theme === 'mountain') {
+            this.drawMountainCarts(ctx, this.train.worldX, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
+            const trainSlopeAngle = -Math.atan(this.getSlope(this.train.worldX));
+            ctx.save();
+            ctx.translate(trainSX + TRAIN_WIDTH / 2, trainY + TRAIN_HEIGHT / 2);
+            ctx.rotate(trainSlopeAngle);
+            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT / 2);
+            if (activeBoostsNow > 0) this.drawFlame(ctx, 0, 44);
+            this.renderer.renderSprite(TRAIN_SPRITES.idle[0], 0, 0);
+            this.renderer.renderSprite(
+                TRAIN_SPRITES.wheels[Math.floor(this.wheelFrame)],
+                0, 40
+            );
+            ctx.restore();
+        } else {
+            this.drawCarts(ctx, trainSX, trainY, '#e74c3c', '#3498db', this.wheelFrame, isCity);
+            if (activeBoostsNow > 0) this.drawFlame(ctx, trainSX, trainY + 44);
+            this.renderer.renderSprite(TRAIN_SPRITES.idle[0], trainSX, trainY);
+            if (!isCity) {
+                this.renderer.renderSprite(
+                    TRAIN_SPRITES.wheels[Math.floor(this.wheelFrame)],
+                    trainSX, trainY + 40
+                );
+            }
+        }
 
         // ── Tunnel overlay (city only) ───────────────────────────────────────
         if (theme === 'city') {
@@ -1089,11 +1399,36 @@ class TrainGame {
             this.drawTunnelPortals(ctx);  // portals on top so jambs always crisp at the edges
         }
 
+        // ── Crowd boarding (inside camera transform for mountain) ─────────────
+        if (theme === 'mountain') {
+            for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
+        }
+
+        // ── End vertical camera shift ──────────────────────────────────────
+        if (theme === 'mountain') {
+            ctx.restore();
+        }
+
         // ── Result overlay (delayed 2.5 s, fades in) ────────────────────────
         if (this.gameState.result) this.drawResult(ctx);
 
+        // ── Pause overlay ─────────────────────────────────────────────────────
+        if (this.paused) {
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0, 0, W, H);
+            ctx.font = 'bold 56px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#fff';
+            ctx.fillText('PAUSED', W / 2, H / 2);
+            ctx.font = '20px monospace';
+            ctx.fillText('Press P or Resume to continue', W / 2, H / 2 + 40);
+            ctx.textAlign = 'left';
+        }
+
         // ── Crowd boarding — drawn on TOP of result overlay ──────────────────
-        for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
+        if (theme !== 'mountain') {
+            for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
+        }
 
         // ── HUD ─────────────────────────────────────────────────────────────
         const activeBoosts = activeBoostsNow;

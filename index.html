@@ -12,26 +12,71 @@
         }
 
         body {
-            background: linear-gradient(to bottom, #87CEEB 0%, #E0F6FF 100%);
+            background: #111;
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 100vh;
             font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+
+        #gameWrapper {
+            display: flex;
+            flex-direction: column;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #topBar {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #222;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .game-btn {
+            padding: 4px 14px;
+            font-size: 20px;
+            line-height: 1;
+            border: 2px solid #555;
+            border-radius: 4px;
+            cursor: pointer;
+            background: #333;
+            color: #ddd;
+            transition: background 0.15s, color 0.15s;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        .game-btn:hover {
+            background: #444;
+            color: #fff;
+        }
+
+        .game-btn:active {
+            background: #555;
+        }
+
+        #pauseBtn.paused {
+            background: #e67e22;
+            color: #fff;
+            border-color: #d35400;
         }
 
         #gameContainer {
             position: relative;
-            width: 1200px;
-            height: 400px;
-            background: linear-gradient(to bottom, #87CEEB 0%, #90EE90 70%, #8B7355 70%, #8B7355 100%);
-            border: 3px solid #333;
+            flex: 1;
+            min-height: 0;
             overflow: hidden;
-            box-shadow: 0 8px 16px rgba(0,0,0,0.3);
         }
 
         #gameCanvas {
             display: block;
+            width: 100%;
+            height: 100%;
             image-rendering: pixelated;
             image-rendering: crisp-edges;
         }
@@ -49,14 +94,58 @@
         .stat {
             margin: 5px 0;
         }
+
+        #bottomBar {
+            padding: 10px 12px;
+            background: #222;
+            display: flex;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        #boostBtn {
+            width: 100%;
+            padding: 18px 0;
+            font-family: monospace;
+            font-size: 28px;
+            font-weight: bold;
+            letter-spacing: 4px;
+            border: 3px solid #c0392b;
+            border-radius: 6px;
+            cursor: pointer;
+            background: #e74c3c;
+            color: #fff;
+            user-select: none;
+            -webkit-user-select: none;
+            transition: background 0.1s;
+        }
+
+        #boostBtn:hover {
+            background: #ff6b5a;
+        }
+
+        #boostBtn:active, #boostBtn.active {
+            background: #ff9800;
+            border-color: #e65100;
+        }
     </style>
 </head>
 <body>
-    <div id="gameContainer">
-        <canvas id="gameCanvas" width="1200" height="400"></canvas>
-        <div id="ui">
-            <div class="stat">Speed: <span id="speed">0</span></div>
-            <div class="stat">Distance: <span id="distance">0</span></div>
+    <div id="gameWrapper">
+        <div id="topBar">
+            <button class="game-btn" id="restartBtn" title="Restart">&#x21BB;</button>
+            <button class="game-btn" id="nextLevelBtn" title="Next Level">&#x23ED;</button>
+            <button class="game-btn" id="pauseBtn" title="Pause">&#x23F8;</button>
+        </div>
+        <div id="gameContainer">
+            <canvas id="gameCanvas"></canvas>
+            <div id="ui">
+                <div class="stat">Speed: <span id="speed">0</span></div>
+                <div class="stat">Distance: <span id="distance">0</span></div>
+            </div>
+        </div>
+        <div id="bottomBar">
+            <button id="boostBtn">BOOST</button>
         </div>
     </div>
 
