@@ -122,9 +122,11 @@ class TrainGame {
         this.sound.volume = 0;
         this._soundPlaying = false;
 
-        this.winSound = new Audio('assets/sounds/this_is_fairy_land.m4a');
-        this.winSound.volume = 1;
+        this.winSound      = new Audio('assets/sounds/this_is_fairy_land.m4a');
+        this.standClear    = new Audio('assets/sounds/stand_clear_of_closing_doors_please.m4a');
+        this.dingDong      = new Audio('assets/sounds/ding_dong.m4a');
         this._winSoundPlayed = false;
+        this._winTimers      = [];  // setTimeout IDs so we can cancel on reset
 
         this.lastTime = Date.now();
         this.gameLoop();
@@ -279,9 +281,12 @@ class TrainGame {
         this.sound.volume = 0;
         this._soundPlaying = false;
 
-        // Stop win jingle if it's still playing
-        this.winSound.pause();
-        this.winSound.currentTime = 0;
+        // Cancel any pending win-sequence timers and stop all win sounds
+        this._winTimers.forEach(id => clearTimeout(id));
+        this._winTimers = [];
+        this.winSound.pause();   this.winSound.currentTime = 0;
+        this.standClear.pause(); this.standClear.currentTime = 0;
+        this.dingDong.pause();   this.dingDong.currentTime = 0;
         this._winSoundPlayed = false;
     }
 
@@ -342,6 +347,14 @@ class TrainGame {
                     this._winSoundPlayed = true;
                     this.winSound.currentTime = 0;
                     this.winSound.play().catch(() => {});
+                    this._winTimers.push(setTimeout(() => {
+                        this.standClear.currentTime = 0;
+                        this.standClear.play().catch(() => {});
+                    }, 1000));
+                    this._winTimers.push(setTimeout(() => {
+                        this.dingDong.currentTime = 0;
+                        this.dingDong.play().catch(() => {});
+                    }, 2000));
                 }
             }
         }
