@@ -289,21 +289,34 @@ class TrainGame {
             }
 
             this.keys[e.key] = true;
-            this.raceStarted = true;
+            this.raceStarted = true;  // first key press starts the race
 
-            if (e.key === 'ArrowRight' || e.key === 'd') {
-                this.train.vx = Math.min(this.train.vx + this.train.acceleration, this.equilibriumSpeed);
-            }
+            // ArrowLeft / A: manual braking (only directional key still needed)
             if (e.key === 'ArrowLeft' || e.key === 'a') {
                 this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.equilibriumSpeed * 0.5);
             }
+            // Space bar: boost token (5 % per press, up to 4 active = +20 %)
             if (e.key === ' ') {
                 e.preventDefault();
-                // Each press adds a 5 % boost token that expires after 1 s (max 4 = 20 %)
                 this.boostTokens.push(Date.now());
             }
         });
         window.addEventListener('keyup', (e) => { this.keys[e.key] = false; });
+
+        // ── Touch / iPad support: tap = boost (space bar alias) ───────────────
+        this.canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();  // stop scroll / double-tap zoom
+
+            // Tap restarts if result overlay is visible
+            if (this.gameState.result && this.gameState.endTime &&
+                Date.now() - this.gameState.endTime > 2500) {
+                this.reset();
+                return;
+            }
+
+            this.raceStarted = true;
+            this.boostTokens.push(Date.now());
+        }, { passive: false });
     }
 
     checkFinish() {
@@ -348,10 +361,12 @@ class TrainGame {
         // Friction first, then acceleration — equilibrium = accel / (1 - friction) = 4.0
         this.train.vx *= this.train.friction;
 
-        if (this.keys['ArrowRight'] || this.keys['d'] || this.keys[' ']) {
-            // Scale acceleration by boost so equilibrium = (accel * boost) / (1 - friction)
+        // Auto-accelerate: always push forward once the race has started.
+        // Boost tokens (tap / space) raise the ceiling by up to +20 %.
+        if (this.raceStarted) {
             this.train.vx = Math.min(this.train.vx + this.train.acceleration * boostMultiplier, effectiveMax);
         }
+        // Manual braking still available via ArrowLeft / A on keyboard
         if (this.keys['ArrowLeft'] || this.keys['a']) {
             this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.equilibriumSpeed * 0.5);
         }
