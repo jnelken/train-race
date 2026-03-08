@@ -122,6 +122,10 @@ class TrainGame {
         this.sound.volume = 0;
         this._soundPlaying = false;
 
+        this.winSound = new Audio('assets/sounds/this_is_fairy_land.m4a');
+        this.winSound.volume = 1;
+        this._winSoundPlayed = false;
+
         this.lastTime = Date.now();
         this.gameLoop();
     }
@@ -269,11 +273,16 @@ class TrainGame {
         this.crowdSpawned = false;
         this.generateInitialScenery();
 
-        // Stop sound so it restarts cleanly on first keypress of new race
+        // Stop engine sound so it restarts cleanly on first keypress of new race
         this.sound.pause();
         this.sound.currentTime = 0;
         this.sound.volume = 0;
         this._soundPlaying = false;
+
+        // Stop win jingle if it's still playing
+        this.winSound.pause();
+        this.winSound.currentTime = 0;
+        this._winSoundPlayed = false;
     }
 
     setupInputListeners() {
@@ -327,7 +336,14 @@ class TrainGame {
             if (pf && of) this.gameState.result = 'tie';
             else if (pf)  this.gameState.result = 'win';
             else          this.gameState.result = 'lose';
-            if (!this.gameState.endTime) this.gameState.endTime = Date.now();
+            if (!this.gameState.endTime) {
+                this.gameState.endTime = Date.now();
+                if (this.gameState.result === 'win' && !this._winSoundPlayed) {
+                    this._winSoundPlayed = true;
+                    this.winSound.currentTime = 0;
+                    this.winSound.play().catch(() => {});
+                }
+            }
         }
     }
 
