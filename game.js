@@ -350,18 +350,14 @@ class TrainGame {
                 if (this.gameState.result === 'win' && !this._winSoundPlayed) {
                     this._winSoundPlayed = true;
 
-                    // Chain: fairy land → (ends) +1s → stand clear → (ends) +1s → ding dong
+                    // Chain: fairy land ends → stand clear ends → ding dong (no gaps)
                     const onWinEnd = () => {
-                        this._winTimers.push(setTimeout(() => {
-                            this.standClear.currentTime = 0;
-                            this.standClear.play().catch(() => {});
-                        }, 1000));
+                        this.standClear.currentTime = 0;
+                        this.standClear.play().catch(() => {});
                     };
                     const onStandClearEnd = () => {
-                        this._winTimers.push(setTimeout(() => {
-                            this.dingDong.currentTime = 0;
-                            this.dingDong.play().catch(() => {});
-                        }, 1000));
+                        this.dingDong.currentTime = 0;
+                        this.dingDong.play().catch(() => {});
                     };
                     this.winSound.addEventListener('ended', onWinEnd, { once: true });
                     this.standClear.addEventListener('ended', onStandClearEnd, { once: true });
