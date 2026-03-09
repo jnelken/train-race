@@ -10,10 +10,15 @@ const STREET_Y     = 358;  // city street surface y
 const PILLAR_GAP   = 120;  // bridge support spacing
 
 // ─── Mountain theme constants ──────────────────────────────────────────────
-const MOUNTAIN_PEAK_HEIGHT = 120;               // max elevation in pixels
+// Visual curve: steep bell curve (max ±60° slope at steepest points)
+const MOUNTAIN_PEAK_HEIGHT = 2285;              // visual elevation in pixels
 const MOUNTAIN_CENTER      = FINISH_LINE_WORLD_X / 2;  // 5000
-const MOUNTAIN_SIGMA       = 2200;              // bell curve width
-const MOUNTAIN_GRAVITY     = 4.0;               // slope effect on speed
+const MOUNTAIN_SIGMA       = 800;               // visual bell curve width
+
+// Physics curve: gentle slope (unchanged gameplay feel)
+const MOUNTAIN_PHYSICS_PEAK  = 120;
+const MOUNTAIN_PHYSICS_SIGMA = 2200;
+const MOUNTAIN_GRAVITY       = 4.0;             // slope effect on speed
 
 function getMountainElevation(worldX) {
     const dx = worldX - MOUNTAIN_CENTER;
@@ -23,6 +28,12 @@ function getMountainElevation(worldX) {
 function getMountainSlope(worldX) {
     const dx = worldX - MOUNTAIN_CENTER;
     return -getMountainElevation(worldX) * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
+}
+
+function getMountainPhysicsSlope(worldX) {
+    const dx = worldX - MOUNTAIN_CENTER;
+    const elev = MOUNTAIN_PHYSICS_PEAK * Math.exp(-(dx * dx) / (2 * MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA));
+    return -elev * dx / (MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA);
 }
 
 // ─── Procedural scenery factories ────────────────────────────────────────────
@@ -208,6 +219,10 @@ class TrainGame {
 
     getSlope(worldX) {
         return this.theme === 'mountain' ? getMountainSlope(worldX) : 0;
+    }
+
+    getPhysicsSlope(worldX) {
+        return this.theme === 'mountain' ? getMountainPhysicsSlope(worldX) : 0;
     }
 
     generateInitialScenery() {
@@ -534,7 +549,7 @@ class TrainGame {
         // ── Post-race: coast to stop, animate crowd, keep cars moving ──────────
         if (!this.gameState.isRunning) {
             this.train.vx    *= this.train.friction;
-            this.train.vx    -= this.getSlope(this.train.worldX) * MOUNTAIN_GRAVITY;
+            this.train.vx    -= this.getPhysicsSlope(this.train.worldX) * MOUNTAIN_GRAVITY;
             this.train.vx     = Math.max(this.train.vx, 0);
             this.train.worldX += this.train.vx;
             this.train.y      = TRACK_FRONT - TRAIN_HEIGHT - this.getElevation(this.train.worldX);
@@ -543,7 +558,7 @@ class TrainGame {
             this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
             if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
             this.opponent.vx    *= this.train.friction;
-            this.opponent.vx    -= this.getSlope(this.opponent.worldX) * MOUNTAIN_GRAVITY;
+            this.opponent.vx    -= this.getPhysicsSlope(this.opponent.worldX) * MOUNTAIN_GRAVITY;
             this.opponent.vx     = Math.max(this.opponent.vx, 0);
             this.opponent.worldX += this.opponent.vx;
             this.opponent.y      = TRACK_BACK - TRAIN_HEIGHT - this.getElevation(this.opponent.worldX);
@@ -577,10 +592,12 @@ class TrainGame {
         if (this.keys['ArrowLeft'] || this.keys['a']) {
             this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.equilibriumSpeed * 0.5);
         }
-        // Mountain slope gravity: uphill slows, downhill speeds
-        const playerSlope = this.getSlope(this.train.worldX);
-        this.train.vx -= playerSlope * MOUNTAIN_GRAVITY;
-        this.train.vx = Math.max(this.train.vx, 0.2);  // never roll backwards
+        // Mountain slope gravity: uphill slows, downhill speeds (uses gentle physics curve)
+        if (this.raceStarted) {
+            const playerSlope = this.getPhysicsSlope(this.train.worldX);
+            this.train.vx -= playerSlope * MOUNTAIN_GRAVITY;
+            this.train.vx = Math.max(this.train.vx, 0.2);  // never roll backwards
+        }
         this.train.worldX += this.train.vx;
         this.cameraX += (this.train.worldX - this.cameraX) * CAMERA_LERP;
         this.cameraY += (this.getElevation(this.train.worldX) - this.cameraY) * CAMERA_LERP;
@@ -641,7 +658,7 @@ class TrainGame {
         // Player equilibrium = (accel - slope*G) / (1-friction), so the ratio
         // vs flat ground is (1 - slope * G / accel).  Apply this to the opponent
         // so both trains slow/speed proportionally on slopes.
-        const oppSlope = this.getSlope(this.opponent.worldX);
+        const oppSlope = this.getPhysicsSlope(this.opponent.worldX);
         const slopeMultiplier = Math.max(1 - oppSlope * MOUNTAIN_GRAVITY / this.train.acceleration, 0.05);
 
         let targetSpeed;
@@ -819,10 +836,10 @@ class TrainGame {
         }
     }
 
-    drawTreeCluster(ctx, obj, screenX) {
+    drawTreeCluster(ctx, obj, screenX, elevationOffset = 0) {
         for (const { dx, px } of obj.trees) {
             const tx = Math.round(screenX + dx);
-            const by = TRACK_BACK - TRAIN_HEIGHT + 10;
+            const by = TRACK_BACK - TRAIN_HEIGHT + 10 - elevationOffset;
 
             ctx.fillStyle = '#1a7a3c';
             ctx.fillRect(tx + px*2, by - px*10, px*2, px);     // tip
@@ -1003,11 +1020,14 @@ class TrainGame {
         const W = this.canvas.width, H = this.canvas.height;
         const step = 4;
 
-        // Green/brown alpine gradient fill following the elevation curve
-        const grad = ctx.createLinearGradient(0, HORIZON_Y - MOUNTAIN_PEAK_HEIGHT, 0, H);
-        grad.addColorStop(0,   '#5a7a3a');  // alpine green at peaks
+        // Anchor gradient to the player's ground level so it always looks good
+        // regardless of camera elevation — green at surface, brown below
+        const playerElev = this.getElevation(this.train.worldX);
+        const surfaceY = TRACK_FRONT + 6 - playerElev;
+        const grad = ctx.createLinearGradient(0, surfaceY - 30, 0, surfaceY + 300);
+        grad.addColorStop(0,   '#5a7a3a');  // alpine green at surface
         grad.addColorStop(0.3, '#6b8c42');  // meadow green
-        grad.addColorStop(0.6, '#8B7355');  // brown earth
+        grad.addColorStop(0.7, '#8B7355');  // brown earth
         grad.addColorStop(1,   '#5e4a2a');  // dark earth
 
         ctx.fillStyle = grad;
@@ -1016,12 +1036,13 @@ class TrainGame {
         for (let sx = 0; sx <= W; sx += step) {
             const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
             const elev = getMountainElevation(worldX);
-            const gy = TRACK_FRONT + 6 - elev;  // ground just below front track
+            const gy = TRACK_FRONT + 6 - elev;
             if (sx === 0) ctx.moveTo(sx, gy);
             else          ctx.lineTo(sx, gy);
         }
-        ctx.lineTo(W, H);
-        ctx.lineTo(0, H);
+        // Extend bottom well past screen (camera shifts the viewport)
+        ctx.lineTo(W, H + MOUNTAIN_PEAK_HEIGHT);
+        ctx.lineTo(0, H + MOUNTAIN_PEAK_HEIGHT);
         ctx.closePath();
         ctx.fill();
     }
@@ -1263,11 +1284,9 @@ class TrainGame {
             ctx.fillRect(0, 0, W, H);
         } else if (theme === 'mountain') {
             const sky = ctx.createLinearGradient(0, 0, 0, H);
-            sky.addColorStop(0,    '#3a8fd6');  // bright alpine blue
-            sky.addColorStop(0.30, '#6bb5e8');  // light blue
-            sky.addColorStop(0.48, '#a8d5a2');  // green-tinged horizon
-            sky.addColorStop(0.55, '#6b8c42');  // meadow
-            sky.addColorStop(1,    '#4a6a2a');  // dark green
+            sky.addColorStop(0,    '#2a7fc6');  // deep alpine blue
+            sky.addColorStop(0.5,  '#5aaee8');  // bright blue
+            sky.addColorStop(1,    '#8dcaf0');  // pale blue at bottom
             ctx.fillStyle = sky;
             ctx.fillRect(0, 0, W, H);
         } else {
@@ -1311,7 +1330,13 @@ class TrainGame {
             const tLayer = this.layers.find(l => l.name === 'trees');
             for (const obj of tLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.6;
-                this.drawTreeCluster(ctx, obj, sx);
+                if (theme === 'mountain') {
+                    // Convert parallax screen position to world X to get elevation
+                    const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+                    this.drawTreeCluster(ctx, obj, sx, getMountainElevation(worldX));
+                } else {
+                    this.drawTreeCluster(ctx, obj, sx);
+                }
             }
         }
 
@@ -1356,7 +1381,12 @@ class TrainGame {
             const rLayer = this.layers.find(l => l.name === 'rocks');
             for (const obj of rLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.9;
-                this.renderer.renderSprite(SCENERY_SPRITES.rock, sx, obj.y);
+                let rockY = obj.y;
+                if (theme === 'mountain') {
+                    const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+                    rockY -= getMountainElevation(worldX);
+                }
+                this.renderer.renderSprite(SCENERY_SPRITES.rock, sx, rockY);
             }
         }
 
