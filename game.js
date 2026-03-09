@@ -244,14 +244,14 @@ class TrainGame {
 
     generateTunnelZones() {
         if (this.theme !== 'city') return [];
-        const zones = [];
-        // Spread 3–5 tunnels evenly across the full race distance
+        // One continuous tunnel made of 3–5 segments placed end-to-end
+        // centered roughly at the midpoint of the race
         const n = 3 + Math.floor(Math.random() * 3);
-        for (let i = 0; i < n; i++) {
-            const cx = (FINISH_LINE_WORLD_X / (n + 1)) * (i + 1) + (Math.random() - 0.5) * 500;
-            zones.push({ startX: cx, endX: cx + 380 + Math.random() * 320 });
-        }
-        return zones;
+        const segLens = [];
+        for (let i = 0; i < n; i++) segLens.push(380 + Math.random() * 320);
+        const totalLen = segLens.reduce((a, b) => a + b, 0);
+        const startX = (FINISH_LINE_WORLD_X - totalLen) / 2 + (Math.random() - 0.5) * 500;
+        return [{ startX, endX: startX + totalLen }];
     }
 
     inTunnel(worldX) {
@@ -941,13 +941,14 @@ class TrainGame {
             const cartElev = getMountainElevation(cartWorldX);
             const cartSlope = getMountainSlope(cartWorldX);
             const cartSX = this.worldToScreen(cartWorldX);
-            const cartY = baseTrackY - TRAIN_HEIGHT - cartElev;
             if (cartSX + TRAIN_WIDTH < 0) break;
             const angle = -Math.atan(cartSlope);
+            // Pivot on the rail contact point (bottom-center of cart)
+            const cartTrackY = baseTrackY - cartElev;
             ctx.save();
-            ctx.translate(cartSX + TRAIN_WIDTH / 2, cartY + TRAIN_HEIGHT / 2);
+            ctx.translate(cartSX + TRAIN_WIDTH / 2, cartTrackY);
             ctx.rotate(angle);
-            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT / 2);
+            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT);
             this.drawSingleCart(ctx, 0, 0, stripeColor, windowColor, wheelFrame, false);
             ctx.restore();
         }
@@ -1353,10 +1354,12 @@ class TrainGame {
         if (theme === 'mountain') {
             this.drawMountainCarts(ctx, this.opponent.worldX, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
             const oppSlopeAngle = -Math.atan(this.getSlope(this.opponent.worldX));
+            // Pivot on rail contact point (bottom-center of locomotive)
+            const oppTrackY = TRACK_BACK - this.getElevation(this.opponent.worldX);
             ctx.save();
-            ctx.translate(opponentSX + TRAIN_WIDTH / 2, oppY + TRAIN_HEIGHT / 2);
+            ctx.translate(opponentSX + TRAIN_WIDTH / 2, oppTrackY);
             ctx.rotate(oppSlopeAngle);
-            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT / 2);
+            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT);
             if (this.opponent.boosting) this.drawFlame(ctx, 0, 44);
             this.renderer.renderSprite(OPPONENT_SPRITES.idle[0], 0, 0);
             this.renderer.renderSprite(
@@ -1400,10 +1403,12 @@ class TrainGame {
         if (theme === 'mountain') {
             this.drawMountainCarts(ctx, this.train.worldX, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
             const trainSlopeAngle = -Math.atan(this.getSlope(this.train.worldX));
+            // Pivot on rail contact point (bottom-center of locomotive)
+            const trainTrackY = TRACK_FRONT - this.getElevation(this.train.worldX);
             ctx.save();
-            ctx.translate(trainSX + TRAIN_WIDTH / 2, trainY + TRAIN_HEIGHT / 2);
+            ctx.translate(trainSX + TRAIN_WIDTH / 2, trainTrackY);
             ctx.rotate(trainSlopeAngle);
-            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT / 2);
+            ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT);
             if (activeBoostsNow > 0) this.drawFlame(ctx, 0, 44);
             this.renderer.renderSprite(TRAIN_SPRITES.idle[0], 0, 0);
             this.renderer.renderSprite(
@@ -1429,11 +1434,6 @@ class TrainGame {
             this.drawTunnelPortals(ctx);  // portals on top so jambs always crisp at the edges
         }
 
-        // ── Crowd boarding (inside camera transform for mountain) ─────────────
-        if (theme === 'mountain') {
-            for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
-        }
-
         // ── End vertical camera shift ──────────────────────────────────────
         if (theme === 'mountain') {
             ctx.restore();
@@ -1456,9 +1456,7 @@ class TrainGame {
         }
 
         // ── Crowd boarding — drawn on TOP of result overlay ──────────────────
-        if (theme !== 'mountain') {
-            for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
-        }
+        for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
 
         // ── HUD ─────────────────────────────────────────────────────────────
         const activeBoosts = activeBoostsNow;
