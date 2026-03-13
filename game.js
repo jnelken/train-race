@@ -144,6 +144,7 @@ class TrainGame {
         this.wheelAnimationSpeed = 0.15;
         this.paused = false;
         this.boostTokens = [];  // timestamps of space presses; each lasts 1 s, max 4 active
+        this._boostFlashTimer = null;
 
         // Pick one theme for the whole race (re-randomised on restart)
         { const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain'; }
@@ -338,8 +339,10 @@ class TrainGame {
         this.crowd = this.crowd.filter(p => !p.done);
     }
 
-    reset() {
-        { const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain'; }
+    reset(newTheme = false) {
+        if (newTheme) {
+            const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain';
+        }
 
         this.train.worldX = 0;
         this.train.vx = 0;
@@ -449,6 +452,10 @@ class TrainGame {
             if (e.key === ' ') {
                 e.preventDefault();
                 this.boostTokens.push(Date.now());
+                const boostBtn = document.getElementById('boostBtn');
+                boostBtn.classList.add('active');
+                clearTimeout(this._boostFlashTimer);
+                this._boostFlashTimer = setTimeout(() => boostBtn.classList.remove('active'), 120);
             }
         });
         window.addEventListener('keyup', (e) => { this.keys[e.key] = false; });
@@ -481,7 +488,7 @@ class TrainGame {
 
         nextLevelBtn.addEventListener('click', () => {
             if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
-            this.reset();
+            this.reset(true);
             this.resetUI();
         });
 
