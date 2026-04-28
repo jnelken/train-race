@@ -945,8 +945,9 @@ class TrainGame {
     drawMountainCarts(ctx, trainWorldX, baseTrackY, stripeColor, windowColor, wheelFrame) {
         for (let i = 0; i < 12; i++) {
             const cartWorldX = trainWorldX - (i + 1) * TRAIN_WIDTH;
-            const cartElev = getMountainElevation(cartWorldX);
-            const cartSlope = getMountainSlope(cartWorldX);
+            const cartCenterX = cartWorldX + TRAIN_WIDTH / 2;
+            const cartElev = getMountainElevation(cartCenterX);
+            const cartSlope = getMountainSlope(cartCenterX);
             const cartSX = this.worldToScreen(cartWorldX);
             if (cartSX + TRAIN_WIDTH < 0) break;
             const angle = -Math.atan(cartSlope);
@@ -1360,9 +1361,10 @@ class TrainGame {
         const oppY = this.opponent.y + oppBob;
         if (theme === 'mountain') {
             this.drawMountainCarts(ctx, this.opponent.worldX, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
-            const oppSlopeAngle = -Math.atan(this.getSlope(this.opponent.worldX));
+            const oppCenterX = this.opponent.worldX + TRAIN_WIDTH / 2;
+            const oppSlopeAngle = -Math.atan(this.getSlope(oppCenterX));
             // Pivot on rail contact point (bottom-center of locomotive)
-            const oppTrackY = TRACK_BACK - this.getElevation(this.opponent.worldX);
+            const oppTrackY = TRACK_BACK - this.getElevation(oppCenterX);
             ctx.save();
             ctx.translate(opponentSX + TRAIN_WIDTH / 2, oppTrackY);
             ctx.rotate(oppSlopeAngle);
@@ -1409,9 +1411,10 @@ class TrainGame {
         const activeBoostsNow = Math.min(this.boostTokens.filter(t => Date.now() - t < 1000).length, 4);
         if (theme === 'mountain') {
             this.drawMountainCarts(ctx, this.train.worldX, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
-            const trainSlopeAngle = -Math.atan(this.getSlope(this.train.worldX));
+            const trainCenterX = this.train.worldX + TRAIN_WIDTH / 2;
+            const trainSlopeAngle = -Math.atan(this.getSlope(trainCenterX));
             // Pivot on rail contact point (bottom-center of locomotive)
-            const trainTrackY = TRACK_FRONT - this.getElevation(this.train.worldX);
+            const trainTrackY = TRACK_FRONT - this.getElevation(trainCenterX);
             ctx.save();
             ctx.translate(trainSX + TRAIN_WIDTH / 2, trainTrackY);
             ctx.rotate(trainSlopeAngle);
