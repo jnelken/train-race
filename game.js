@@ -19,6 +19,10 @@ const MOUNTAIN_SIGMA       = 800;               // visual bell curve width
 const MOUNTAIN_PHYSICS_PEAK  = 120;
 const MOUNTAIN_PHYSICS_SIGMA = 2200;
 const MOUNTAIN_GRAVITY       = 4.0;             // slope effect on speed
+const OPPONENT_SPEED_STEP    = 0.05;
+const OPPONENT_SPEED_VARIANCE = 0.05;
+const OPPONENT_TARGET_WIN_RATE = 0.75;
+const OPPONENT_BALANCE_WINDOW  = 4;
 
 function getMountainElevation(worldX) {
     const dx = worldX - MOUNTAIN_CENTER;
@@ -120,8 +124,13 @@ class TrainGame {
         this.cameraX = 0;
         this.cameraY = 0;
 
-        const eq = this.train.acceleration / (1 - this.train.friction); // 4.0
-        this.equilibriumSpeed = eq;
+        this.cruiseSpeed = 3;
+        this.opponentDifficulty = {
+            baseMultiplier: 1,
+            hasSeenLoss: false,
+            history: [],
+            raceMultiplier: 1,
+        };
 
         // slant: +1 = fast start / slow finish; -1 = slow start / fast finish (randomised)
         const slantDir = Math.random() < 0.5 ? 1 : -1;
@@ -129,13 +138,14 @@ class TrainGame {
             worldX: 0,
             y: TRACK_BACK - TRAIN_HEIGHT,
             vx: 0,
-            topSpeed: eq,          // average speed across the race
-            slant: slantDir * 1.0, // speed offset at race start (±1 → range 3–5, avg 4)
+            topSpeed: this.cruiseSpeed, // average speed across the race after difficulty/randomisation
+            slant: slantDir * 1.0,      // speed offset at race start / finish
             boostBudget: FINISH_LINE_WORLD_X * 0.40,  // 40 % of race distance
             boosting: false,
             wheelFrame: 0,
             initialRampDone: false,
         };
+        this.configureOpponentSpeed();
 
         this.gameState = { distance: 0, time: 0, isRunning: true, result: null, endTime: null };
         this.raceStarted = false;
@@ -339,7 +349,49 @@ class TrainGame {
         this.crowd = this.crowd.filter(p => !p.done);
     }
 
+    adjustOpponentDifficulty(result) {
+        if (!result || result === 'tie') return;
+
+        const downMultiplier = 1 - OPPONENT_SPEED_STEP;
+        const upMultiplier   = 1 + OPPONENT_SPEED_STEP;
+
+        if (!this.opponentDifficulty.hasSeenLoss) {
+            if (result === 'win') {
+                this.opponentDifficulty.baseMultiplier *= upMultiplier;
+                return;
+            }
+
+            this.opponentDifficulty.hasSeenLoss = true;
+            this.opponentDifficulty.history = [0];
+            this.opponentDifficulty.baseMultiplier *= downMultiplier;
+            return;
+        }
+
+        this.opponentDifficulty.history.push(result === 'win' ? 1 : 0);
+        if (this.opponentDifficulty.history.length > OPPONENT_BALANCE_WINDOW) {
+            this.opponentDifficulty.history.shift();
+        }
+
+        const wins = this.opponentDifficulty.history.reduce((sum, value) => sum + value, 0);
+        const winRate = wins / this.opponentDifficulty.history.length;
+
+        if (winRate > OPPONENT_TARGET_WIN_RATE) {
+            this.opponentDifficulty.baseMultiplier *= upMultiplier;
+        } else if (winRate < OPPONENT_TARGET_WIN_RATE) {
+            this.opponentDifficulty.baseMultiplier *= downMultiplier;
+        }
+    }
+
+    configureOpponentSpeed() {
+        const variance = 1 + (Math.random() * 2 - 1) * OPPONENT_SPEED_VARIANCE;
+        const raceMultiplier = Math.max(0.25, this.opponentDifficulty.baseMultiplier * variance);
+        this.opponentDifficulty.raceMultiplier = raceMultiplier;
+        this.opponent.topSpeed = this.cruiseSpeed * raceMultiplier;
+    }
+
     reset(newTheme = false) {
+        this.adjustOpponentDifficulty(this.gameState.result);
+
         if (newTheme) {
             const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain';
         }
@@ -357,6 +409,7 @@ class TrainGame {
         this.opponent.boosting = false;
         this.opponent.wheelFrame = 0;
         this.opponent.initialRampDone = false;
+        this.configureOpponentSpeed();
 
         this.gameState = { distance: 0, time: 0, isRunning: true, result: null, endTime: null };
         this.raceStarted = false;
@@ -447,7 +500,7 @@ class TrainGame {
             this.raceStarted = true;
 
             if (e.key === 'ArrowLeft' || e.key === 'a') {
-                this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.equilibriumSpeed * 0.5);
+                this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.cruiseSpeed * 0.5);
             }
             if (e.key === ' ') {
                 e.preventDefault();
@@ -585,9 +638,10 @@ class TrainGame {
         this.boostTokens = this.boostTokens.filter(t => now - t < 1000);
         const activeBoosts   = Math.min(this.boostTokens.length, 4);
         const boostMultiplier = 1 + activeBoosts * 0.05;           // 1.00 – 1.20
-        const effectiveMax   = this.equilibriumSpeed * boostMultiplier;  // 4.0 – 4.8
+        const effectiveMax   = this.cruiseSpeed * boostMultiplier;  // 3.0 – 3.6
 
-        // Friction first, then acceleration — equilibrium = accel / (1 - friction) = 4.0
+        // Friction first, then acceleration — raw equilibrium is 4.0,
+        // but the race caps the default cruise speed at 3.0 before boosts.
         this.train.vx *= this.train.friction;
 
         // Auto-accelerate: always push forward once the race has started.
@@ -597,7 +651,7 @@ class TrainGame {
         }
         // Manual braking still available via ArrowLeft / A on keyboard
         if (this.keys['ArrowLeft'] || this.keys['a']) {
-            this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.equilibriumSpeed * 0.5);
+            this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.cruiseSpeed * 0.5);
         }
         // Mountain slope gravity: uphill slows, downhill speeds (uses gentle physics curve)
         if (this.raceStarted) {
@@ -679,7 +733,7 @@ class TrainGame {
             this.opponent.vx += diff * 0.08;
             if (Math.abs(diff) < 0.05) this.opponent.initialRampDone = true;
         } else {
-            const maxDelta = this.equilibriumSpeed / (15 * 60);
+            const maxDelta = this.cruiseSpeed / (15 * 60);
             this.opponent.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
         }
         this.opponent.vx = Math.max(this.opponent.vx, 0.2);
@@ -719,7 +773,7 @@ class TrainGame {
 
     updateSound() {
         const vx  = this.train.vx;
-        const vol = Math.min(vx / this.equilibriumSpeed, 0.8);
+        const vol = Math.min(vx / this.cruiseSpeed, 0.8);
 
         switch (this._soundState) {
             case 'idle':
