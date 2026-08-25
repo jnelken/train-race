@@ -645,15 +645,19 @@ class TrainGame {
     // ── Tie-system vertical physics ─────────────────────────────────────────
     // Integrate gravity, then clamp against the track from below. While
     // grounded, vy is set to the track's own vertical rate so a body riding a
-    // steady slope stays glued; it only lifts off when the track curves away
-    // downward faster than gravity accelerates the body (a convex crest before
-    // a steep drop). The clamp makes detaching on a climb impossible.
+    // steady slope stays glued; it lifts off only when the track curves away
+    // downward faster than gravity accelerates the body (the crest before a
+    // steep drop). Game rule on top of the pure physics: while a grounded body
+    // is climbing, the ties hold it down unconditionally — without this a fast
+    // train would ski-jump off the convex flattening just BEFORE the summit,
+    // i.e. detach on the uphill, which is never allowed.
     applyTiePhysics(body, centerWorldX) {
         const prevElev  = body.elev;
         const trackElev = this.getElevation(centerWorldX);
         body.vy   -= TRAIN_FALL_GRAVITY;
         body.elev += body.vy;
-        if (body.elev <= trackElev) {
+        const tiedUphill = !body.airborne && this.getSlope(centerWorldX) > 0;
+        if (body.elev <= trackElev || tiedUphill) {
             body.elev     = trackElev;
             body.vy       = trackElev - prevElev;  // follow the track's vertical rate
             body.airborne = false;
