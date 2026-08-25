@@ -53,9 +53,11 @@ function getMountainPhysicsSlope(worldX) {
     return -elev * dx / (MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA);
 }
 
-// Fresh vertical-physics state for a train's trailing carts.
+// Fresh vertical-physics state for a train's trailing carts. centerX is
+// assigned on the first update tick (before the first draw) by walking back
+// along the track from the locomotive.
 function makeCartStates() {
-    return Array.from({ length: CART_COUNT }, () => ({ elev: 0, vy: 0, airborne: false, angle: 0 }));
+    return Array.from({ length: CART_COUNT }, () => ({ centerX: 0, elev: 0, vy: 0, airborne: false, angle: 0 }));
 }
 
 // ─── Procedural scenery factories ────────────────────────────────────────────
@@ -682,13 +684,32 @@ class TrainGame {
         body.angle += (targetAngle - body.angle) * TRAIN_ANGLE_LERP;
     }
 
+    // Walk backward from world x `fromX` by `dist` measured ALONG the track
+    // surface (arc length). On steep slopes one car length of track spans far
+    // less horizontal distance than on the flat, so spacing carts by arc
+    // length keeps couplings tight instead of stretching cars apart on grades
+    // and piling them into each other where the slope levels out.
+    trailAlongTrack(fromX, dist) {
+        const STEP = 8;
+        let x = fromX, remaining = dist;
+        for (;;) {
+            const slope = this.getSlope(x - STEP / 2);
+            const arcPerDx = Math.sqrt(1 + slope * slope);
+            if (STEP * arcPerDx >= remaining) return x - remaining / arcPerDx;
+            x -= STEP;
+            remaining -= STEP * arcPerDx;
+        }
+    }
+
     // Update a whole consist: locomotive plus its trailing carts, each body
     // simulated at its own center so the train articulates over the terrain.
     updateTrainVertical(train) {
-        const centerX = train.worldX + TRAIN_WIDTH / 2;
+        let centerX = train.worldX + TRAIN_WIDTH / 2;
         this.updateBodyVertical(train, centerX, train.vx);
-        for (let i = 0; i < train.carts.length; i++) {
-            this.updateBodyVertical(train.carts[i], centerX - (i + 1) * TRAIN_WIDTH, train.vx);
+        for (const cart of train.carts) {
+            centerX = this.trailAlongTrack(centerX, TRAIN_WIDTH);
+            cart.centerX = centerX;
+            this.updateBodyVertical(cart, centerX, train.vx);
         }
     }
 
@@ -1096,11 +1117,9 @@ class TrainGame {
     // own simulated tie-physics state (elevation + pitch), so the consist
     // articulates over crests and can trail the locomotive through the air.
     drawMountainCarts(ctx, train, baseTrackY, stripeColor, windowColor, wheelFrame) {
-        for (let i = 0; i < train.carts.length; i++) {
-            const cartWorldX = train.worldX - (i + 1) * TRAIN_WIDTH;
-            const cartSX = this.worldToScreen(cartWorldX);
+        for (const cart of train.carts) {
+            const cartSX = this.worldToScreen(cart.centerX - TRAIN_WIDTH / 2);
             if (cartSX + TRAIN_WIDTH < 0) break;
-            const cart = train.carts[i];
             // Pivot on the rail contact point (bottom-center of cart)
             ctx.save();
             ctx.translate(cartSX + TRAIN_WIDTH / 2, baseTrackY - cart.elev);
