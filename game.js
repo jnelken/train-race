@@ -19,6 +19,18 @@ const MOUNTAIN_SIGMA       = 800;               // visual bell curve width
 const MOUNTAIN_PHYSICS_PEAK  = 120;
 const MOUNTAIN_PHYSICS_SIGMA = 2200;
 const MOUNTAIN_GRAVITY       = 4.0;             // slope effect on speed
+
+// ─── Tie system ─────────────────────────────────────────────────────────────
+// Trains are held to the rails by gravity, not welded to them. Each body
+// (locomotive or cart) carries its own elevation + vertical velocity. The
+// track acts as a one-way clamp from below: on climbs the rising rails push
+// the body up so it can never detach, but over a convex crest the track can
+// drop away faster than gravity pulls the body down — then it goes airborne
+// until gravity brings it back to the rails.
+const TRAIN_FALL_GRAVITY = 0.025;  // px/frame² downward acceleration while airborne
+const TRAIN_ANGLE_LERP   = 0.18;   // per-frame pitch smoothing toward target angle
+const AIRBORNE_MAX_PITCH = 0.55;   // rad (~31°) — pitch clamp during flight
+const CART_COUNT         = 12;     // trailing carts simulated & drawn per train
 const OPPONENT_SPEED_STEP    = 0.05;
 const OPPONENT_SPEED_VARIANCE = 0.05;
 const OPPONENT_TARGET_WIN_RATE = 0.75;
@@ -38,6 +50,11 @@ function getMountainPhysicsSlope(worldX) {
     const dx = worldX - MOUNTAIN_CENTER;
     const elev = MOUNTAIN_PHYSICS_PEAK * Math.exp(-(dx * dx) / (2 * MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA));
     return -elev * dx / (MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA);
+}
+
+// Fresh vertical-physics state for a train's trailing carts.
+function makeCartStates() {
+    return Array.from({ length: CART_COUNT }, () => ({ elev: 0, vy: 0, airborne: false, angle: 0 }));
 }
 
 // ─── Procedural scenery factories ────────────────────────────────────────────
@@ -119,6 +136,11 @@ class TrainGame {
             maxSpeed: 8,
             acceleration: 0.2,
             friction: 0.95,
+            elev: 0,           // height above the flat baseline (up-positive)
+            vy: 0,             // vertical velocity (up-positive)
+            airborne: false,
+            angle: 0,          // render pitch (canvas rotation, radians)
+            carts: makeCartStates(),
         };
 
         this.cameraX = 0;
@@ -144,6 +166,11 @@ class TrainGame {
             boosting: false,
             wheelFrame: 0,
             initialRampDone: false,
+            elev: 0,
+            vy: 0,
+            airborne: false,
+            angle: 0,
+            carts: makeCartStates(),
         };
         this.configureOpponentSpeed();
 
@@ -398,6 +425,12 @@ class TrainGame {
 
         this.train.worldX = 0;
         this.train.vx = 0;
+        this.train.elev = 0;
+        this.train.vy = 0;
+        this.train.airborne = false;
+        this.train.angle = 0;
+        this.train.carts = makeCartStates();
+        this.train.y = TRACK_FRONT - TRAIN_HEIGHT;
         this.cameraX = 0;
         this.cameraY = 0;
 
@@ -409,6 +442,12 @@ class TrainGame {
         this.opponent.boosting = false;
         this.opponent.wheelFrame = 0;
         this.opponent.initialRampDone = false;
+        this.opponent.elev = 0;
+        this.opponent.vy = 0;
+        this.opponent.airborne = false;
+        this.opponent.angle = 0;
+        this.opponent.carts = makeCartStates();
+        this.opponent.y = TRACK_BACK - TRAIN_HEIGHT;
         this.configureOpponentSpeed();
 
         this.gameState = { distance: 0, time: 0, isRunning: true, result: null, endTime: null };
@@ -603,25 +642,75 @@ class TrainGame {
         }
     }
 
+    // ── Tie-system vertical physics ─────────────────────────────────────────
+    // Integrate gravity, then clamp against the track from below. While
+    // grounded, vy is set to the track's own vertical rate so a body riding a
+    // steady slope stays glued; it only lifts off when the track curves away
+    // downward faster than gravity accelerates the body (a convex crest before
+    // a steep drop). The clamp makes detaching on a climb impossible.
+    applyTiePhysics(body, centerWorldX) {
+        const prevElev  = body.elev;
+        const trackElev = this.getElevation(centerWorldX);
+        body.vy   -= TRAIN_FALL_GRAVITY;
+        body.elev += body.vy;
+        if (body.elev <= trackElev) {
+            body.elev     = trackElev;
+            body.vy       = trackElev - prevElev;  // follow the track's vertical rate
+            body.airborne = false;
+        } else {
+            body.airborne = true;
+        }
+    }
+
+    // Vertical physics + render pitch for one body (locomotive or cart).
+    updateBodyVertical(body, centerWorldX, vx) {
+        this.applyTiePhysics(body, centerWorldX);
+        let targetAngle;
+        if (body.airborne) {
+            // Nose follows the flight direction, clamped for readability
+            targetAngle = -Math.atan2(body.vy, Math.max(vx, 0.5));
+            targetAngle = Math.max(-AIRBORNE_MAX_PITCH, Math.min(AIRBORNE_MAX_PITCH, targetAngle));
+        } else {
+            targetAngle = -Math.atan(this.getSlope(centerWorldX));
+        }
+        body.angle += (targetAngle - body.angle) * TRAIN_ANGLE_LERP;
+    }
+
+    // Update a whole consist: locomotive plus its trailing carts, each body
+    // simulated at its own center so the train articulates over the terrain.
+    updateTrainVertical(train) {
+        const centerX = train.worldX + TRAIN_WIDTH / 2;
+        this.updateBodyVertical(train, centerX, train.vx);
+        for (let i = 0; i < train.carts.length; i++) {
+            this.updateBodyVertical(train.carts[i], centerX - (i + 1) * TRAIN_WIDTH, train.vx);
+        }
+    }
+
     update(deltaTime) {
         if (this.paused) return;
 
         // ── Post-race: coast to stop, animate crowd, keep cars moving ──────────
         if (!this.gameState.isRunning) {
             this.train.vx    *= this.train.friction;
-            this.train.vx    -= this.getPhysicsSlope(this.train.worldX) * MOUNTAIN_GRAVITY;
+            if (!this.train.airborne) {
+                this.train.vx -= this.getPhysicsSlope(this.train.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
+            }
             this.train.vx     = Math.max(this.train.vx, 0);
             this.train.worldX += this.train.vx;
-            this.train.y      = TRACK_FRONT - TRAIN_HEIGHT - this.getElevation(this.train.worldX);
+            this.updateTrainVertical(this.train);
+            this.train.y      = TRACK_FRONT - TRAIN_HEIGHT - this.train.elev;
             this.cameraX     += (this.train.worldX - this.cameraX) * CAMERA_LERP;
-            this.cameraY     += (this.getElevation(this.train.worldX) - this.cameraY) * CAMERA_LERP;
+            this.cameraY     += (this.train.elev - this.cameraY) * CAMERA_LERP;
             this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
             if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
             this.opponent.vx    *= this.train.friction;
-            this.opponent.vx    -= this.getPhysicsSlope(this.opponent.worldX) * MOUNTAIN_GRAVITY;
+            if (!this.opponent.airborne) {
+                this.opponent.vx -= this.getPhysicsSlope(this.opponent.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
+            }
             this.opponent.vx     = Math.max(this.opponent.vx, 0);
             this.opponent.worldX += this.opponent.vx;
-            this.opponent.y      = TRACK_BACK - TRAIN_HEIGHT - this.getElevation(this.opponent.worldX);
+            this.updateTrainVertical(this.opponent);
+            this.opponent.y      = TRACK_BACK - TRAIN_HEIGHT - this.opponent.elev;
             this.opponent.wheelFrame += Math.abs(this.opponent.vx) * this.wheelAnimationSpeed;
             if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
             this.updateCars();
@@ -653,16 +742,18 @@ class TrainGame {
         if (this.keys['ArrowLeft'] || this.keys['a']) {
             this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.cruiseSpeed * 0.5);
         }
-        // Mountain slope gravity: uphill slows, downhill speeds (uses gentle physics curve)
-        if (this.raceStarted) {
-            const playerSlope = this.getPhysicsSlope(this.train.worldX);
+        // Mountain slope gravity: uphill slows, downhill speeds (uses gentle physics curve).
+        // Skipped while airborne — wheels off the rails get no slope assist.
+        if (this.raceStarted && !this.train.airborne) {
+            const playerSlope = this.getPhysicsSlope(this.train.worldX + TRAIN_WIDTH / 2);
             this.train.vx -= playerSlope * MOUNTAIN_GRAVITY;
             this.train.vx = Math.max(this.train.vx, 0.2);  // never roll backwards
         }
         this.train.worldX += this.train.vx;
+        this.updateTrainVertical(this.train);
         this.cameraX += (this.train.worldX - this.cameraX) * CAMERA_LERP;
-        this.cameraY += (this.getElevation(this.train.worldX) - this.cameraY) * CAMERA_LERP;
-        this.train.y = TRACK_FRONT - TRAIN_HEIGHT - this.getElevation(this.train.worldX);
+        this.cameraY += (this.train.elev - this.cameraY) * CAMERA_LERP;
+        this.train.y = TRACK_FRONT - TRAIN_HEIGHT - this.train.elev;
 
         if (this.train.vx > 0) this.gameState.distance += this.train.vx;
 
@@ -719,7 +810,7 @@ class TrainGame {
         // Player equilibrium = (accel - slope*G) / (1-friction), so the ratio
         // vs flat ground is (1 - slope * G / accel).  Apply this to the opponent
         // so both trains slow/speed proportionally on slopes.
-        const oppSlope = this.getPhysicsSlope(this.opponent.worldX);
+        const oppSlope = this.getPhysicsSlope(this.opponent.worldX + TRAIN_WIDTH / 2);
         const slopeMultiplier = Math.max(1 - oppSlope * MOUNTAIN_GRAVITY / this.train.acceleration, 0.05);
 
         let targetSpeed;
@@ -739,7 +830,8 @@ class TrainGame {
         this.opponent.vx = Math.max(this.opponent.vx, 0.2);
 
         this.opponent.worldX    += this.opponent.vx;
-        this.opponent.y = TRACK_BACK - TRAIN_HEIGHT - this.getElevation(this.opponent.worldX);
+        this.updateTrainVertical(this.opponent);
+        this.opponent.y = TRACK_BACK - TRAIN_HEIGHT - this.opponent.elev;
         this.opponent.wheelFrame += this.opponent.vx * this.wheelAnimationSpeed;
         if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
 
@@ -995,21 +1087,19 @@ class TrainGame {
         }
     }
 
-    // Draw carts following the mountain curve — each cart at its own elevation/rotation.
-    drawMountainCarts(ctx, trainWorldX, baseTrackY, stripeColor, windowColor, wheelFrame) {
-        for (let i = 0; i < 12; i++) {
-            const cartWorldX = trainWorldX - (i + 1) * TRAIN_WIDTH;
-            const cartCenterX = cartWorldX + TRAIN_WIDTH / 2;
-            const cartElev = getMountainElevation(cartCenterX);
-            const cartSlope = getMountainSlope(cartCenterX);
+    // Draw carts following the mountain terrain — each cart rendered from its
+    // own simulated tie-physics state (elevation + pitch), so the consist
+    // articulates over crests and can trail the locomotive through the air.
+    drawMountainCarts(ctx, train, baseTrackY, stripeColor, windowColor, wheelFrame) {
+        for (let i = 0; i < train.carts.length; i++) {
+            const cartWorldX = train.worldX - (i + 1) * TRAIN_WIDTH;
             const cartSX = this.worldToScreen(cartWorldX);
             if (cartSX + TRAIN_WIDTH < 0) break;
-            const angle = -Math.atan(cartSlope);
+            const cart = train.carts[i];
             // Pivot on the rail contact point (bottom-center of cart)
-            const cartTrackY = baseTrackY - cartElev;
             ctx.save();
-            ctx.translate(cartSX + TRAIN_WIDTH / 2, cartTrackY);
-            ctx.rotate(angle);
+            ctx.translate(cartSX + TRAIN_WIDTH / 2, baseTrackY - cart.elev);
+            ctx.rotate(cart.angle);
             ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT);
             this.drawSingleCart(ctx, 0, 0, stripeColor, windowColor, wheelFrame, false);
             ctx.restore();
@@ -1085,7 +1175,7 @@ class TrainGame {
 
         // Anchor gradient to the player's ground level so it always looks good
         // regardless of camera elevation — green at surface, brown below
-        const playerElev = this.getElevation(this.train.worldX);
+        const playerElev = this.getElevation(this.train.worldX + TRAIN_WIDTH / 2);
         const surfaceY = TRACK_FRONT + 6 - playerElev;
         const grad = ctx.createLinearGradient(0, surfaceY - 30, 0, surfaceY + 300);
         grad.addColorStop(0,   '#5a7a3a');  // alpine green at surface
@@ -1372,9 +1462,8 @@ class TrainGame {
         const mLayer = this.layers.find(l => l.name === 'mountains');
         for (const obj of mLayer.objects) {
             const sx = obj.x - this.cameraX * 0.3;
-            if (obj.type === 'building')     this.drawBuilding(ctx, obj, sx);
-            else if (obj.type === 'alpine')  this.drawMountain(ctx, obj, sx);
-            else                             this.drawMountain(ctx, obj, sx);
+            if (obj.type === 'building') this.drawBuilding(ctx, obj, sx);
+            else                         this.drawMountain(ctx, obj, sx);
         }
 
         // ── City-specific ground, street & pillars ───────────────────────────
@@ -1414,14 +1503,12 @@ class TrainGame {
         const opponentSX = this.worldToScreen(this.opponent.worldX);
         const oppY = this.opponent.y + oppBob;
         if (theme === 'mountain') {
-            this.drawMountainCarts(ctx, this.opponent.worldX, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
-            const oppCenterX = this.opponent.worldX + TRAIN_WIDTH / 2;
-            const oppSlopeAngle = -Math.atan(this.getSlope(oppCenterX));
-            // Pivot on rail contact point (bottom-center of locomotive)
-            const oppTrackY = TRACK_BACK - this.getElevation(oppCenterX);
+            this.drawMountainCarts(ctx, this.opponent, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
+            // Pivot on rail contact point (bottom-center of locomotive) using
+            // the simulated tie-physics state — may be above the rails midair.
             ctx.save();
-            ctx.translate(opponentSX + TRAIN_WIDTH / 2, oppTrackY);
-            ctx.rotate(oppSlopeAngle);
+            ctx.translate(opponentSX + TRAIN_WIDTH / 2, TRACK_BACK - this.opponent.elev);
+            ctx.rotate(this.opponent.angle);
             ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT);
             if (this.opponent.boosting) this.drawFlame(ctx, 0, 44);
             this.renderer.renderSprite(OPPONENT_SPRITES.idle[0], 0, 0);
@@ -1464,14 +1551,12 @@ class TrainGame {
         const trainY          = this.train.y + trainBob;
         const activeBoostsNow = Math.min(this.boostTokens.filter(t => Date.now() - t < 1000).length, 4);
         if (theme === 'mountain') {
-            this.drawMountainCarts(ctx, this.train.worldX, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
-            const trainCenterX = this.train.worldX + TRAIN_WIDTH / 2;
-            const trainSlopeAngle = -Math.atan(this.getSlope(trainCenterX));
-            // Pivot on rail contact point (bottom-center of locomotive)
-            const trainTrackY = TRACK_FRONT - this.getElevation(trainCenterX);
+            this.drawMountainCarts(ctx, this.train, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
+            // Pivot on rail contact point (bottom-center of locomotive) using
+            // the simulated tie-physics state — may be above the rails midair.
             ctx.save();
-            ctx.translate(trainSX + TRAIN_WIDTH / 2, trainTrackY);
-            ctx.rotate(trainSlopeAngle);
+            ctx.translate(trainSX + TRAIN_WIDTH / 2, TRACK_FRONT - this.train.elev);
+            ctx.rotate(this.train.angle);
             ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT);
             if (activeBoostsNow > 0) this.drawFlame(ctx, 0, 44);
             this.renderer.renderSprite(TRAIN_SPRITES.idle[0], 0, 0);
