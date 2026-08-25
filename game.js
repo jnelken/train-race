@@ -31,6 +31,7 @@ const TRAIN_FALL_GRAVITY = 0.025;  // px/frame² downward acceleration while air
 const TRAIN_ANGLE_LERP   = 0.18;   // per-frame pitch smoothing toward target angle
 const AIRBORNE_MAX_PITCH = 0.55;   // rad (~31°) — pitch clamp during flight
 const CART_COUNT         = 12;     // trailing carts simulated & drawn per train
+const AXLE_OFFSET        = 56;     // px from a car's center to each wheel contact point
 const OPPONENT_SPEED_STEP    = 0.05;
 const OPPONENT_SPEED_VARIANCE = 0.05;
 const OPPONENT_TARGET_WIN_RATE = 0.75;
@@ -642,40 +643,41 @@ class TrainGame {
         }
     }
 
-    // ── Tie-system vertical physics ─────────────────────────────────────────
-    // Integrate gravity, then clamp against the track from below. While
-    // grounded, vy is set to the track's own vertical rate so a body riding a
-    // steady slope stays glued; it lifts off only when the track curves away
-    // downward faster than gravity accelerates the body (the crest before a
-    // steep drop). Game rule on top of the pure physics: while a grounded body
-    // is climbing, the ties hold it down unconditionally — without this a fast
-    // train would ski-jump off the convex flattening just BEFORE the summit,
-    // i.e. detach on the uphill, which is never allowed.
-    applyTiePhysics(body, centerWorldX) {
+    // ── Tie-system vertical physics + render pitch for one body ─────────────
+    // Each body (locomotive or cart) rides on two axles, so its ground
+    // reference is the CHORD between the wheel contact points — this keeps the
+    // wheels on the rails through tight crests/valleys and stops adjacent car
+    // ends crossing into each other. Integrate gravity, then clamp against
+    // that chord from below. While grounded, vy is set to the track's own
+    // vertical rate so a body riding a steady slope stays glued; it lifts off
+    // only when the track curves away downward faster than gravity
+    // accelerates the body (the crest before a steep drop). Game rule on top
+    // of the pure physics: while a grounded body is climbing, the ties hold
+    // it down unconditionally — without this a fast train would ski-jump off
+    // the convex flattening just BEFORE the summit, i.e. detach on the
+    // uphill, which is never allowed.
+    updateBodyVertical(body, centerWorldX, vx) {
+        const elevFront = this.getElevation(centerWorldX + AXLE_OFFSET);
+        const elevRear  = this.getElevation(centerWorldX - AXLE_OFFSET);
+        const chordElev = (elevFront + elevRear) / 2;
         const prevElev  = body.elev;
-        const trackElev = this.getElevation(centerWorldX);
         body.vy   -= TRAIN_FALL_GRAVITY;
         body.elev += body.vy;
-        const tiedUphill = !body.airborne && this.getSlope(centerWorldX) > 0;
-        if (body.elev <= trackElev || tiedUphill) {
-            body.elev     = trackElev;
-            body.vy       = trackElev - prevElev;  // follow the track's vertical rate
+        const tiedUphill = !body.airborne && elevFront > elevRear;
+        if (body.elev <= chordElev || tiedUphill) {
+            body.elev     = chordElev;
+            body.vy       = chordElev - prevElev;  // follow the track's vertical rate
             body.airborne = false;
         } else {
             body.airborne = true;
         }
-    }
-
-    // Vertical physics + render pitch for one body (locomotive or cart).
-    updateBodyVertical(body, centerWorldX, vx) {
-        this.applyTiePhysics(body, centerWorldX);
         let targetAngle;
         if (body.airborne) {
             // Nose follows the flight direction, clamped for readability
             targetAngle = -Math.atan2(body.vy, Math.max(vx, 0.5));
             targetAngle = Math.max(-AIRBORNE_MAX_PITCH, Math.min(AIRBORNE_MAX_PITCH, targetAngle));
         } else {
-            targetAngle = -Math.atan(this.getSlope(centerWorldX));
+            targetAngle = -Math.atan2(elevFront - elevRear, 2 * AXLE_OFFSET);
         }
         body.angle += (targetAngle - body.angle) * TRAIN_ANGLE_LERP;
     }
@@ -696,9 +698,7 @@ class TrainGame {
         // ── Post-race: coast to stop, animate crowd, keep cars moving ──────────
         if (!this.gameState.isRunning) {
             this.train.vx    *= this.train.friction;
-            if (!this.train.airborne) {
-                this.train.vx -= this.getPhysicsSlope(this.train.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
-            }
+            this.train.vx    -= this.getPhysicsSlope(this.train.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
             this.train.vx     = Math.max(this.train.vx, 0);
             this.train.worldX += this.train.vx;
             this.updateTrainVertical(this.train);
@@ -708,9 +708,7 @@ class TrainGame {
             this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
             if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
             this.opponent.vx    *= this.train.friction;
-            if (!this.opponent.airborne) {
-                this.opponent.vx -= this.getPhysicsSlope(this.opponent.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
-            }
+            this.opponent.vx    -= this.getPhysicsSlope(this.opponent.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
             this.opponent.vx     = Math.max(this.opponent.vx, 0);
             this.opponent.worldX += this.opponent.vx;
             this.updateTrainVertical(this.opponent);
@@ -746,9 +744,12 @@ class TrainGame {
         if (this.keys['ArrowLeft'] || this.keys['a']) {
             this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.cruiseSpeed * 0.5);
         }
-        // Mountain slope gravity: uphill slows, downhill speeds (uses gentle physics curve).
-        // Skipped while airborne — wheels off the rails get no slope assist.
-        if (this.raceStarted && !this.train.airborne) {
+        // Mountain slope gravity: uphill slows, downhill speeds. This uses the
+        // separate gentle physics curve — a stylized speed shaping applied even
+        // midair, which keeps vx steady across ground/air transitions (a
+        // conditional skip here caused vx to oscillate and the grounded state
+        // to flicker at sub-pixel scale).
+        if (this.raceStarted) {
             const playerSlope = this.getPhysicsSlope(this.train.worldX + TRAIN_WIDTH / 2);
             this.train.vx -= playerSlope * MOUNTAIN_GRAVITY;
             this.train.vx = Math.max(this.train.vx, 0.2);  // never roll backwards
