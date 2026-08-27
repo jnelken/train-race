@@ -703,13 +703,63 @@ class TrainGame {
 
     // Update a whole consist: locomotive plus its trailing carts, each body
     // simulated at its own center so the train articulates over the terrain.
+    // Grounded cars space by track arc length. Airborne cars (leader flying,
+    // or a follower that lifted while the leader is still on rails) lock one
+    // car-length along the leader's pitch — otherwise track-following X +
+    // independent ballistic elev tears couplers apart on fast crest/descent
+    // launches. Soft-settle onto the chord when rejoining the rails so the
+    // elev jump doesn't invent a huge positive vy.
     updateTrainVertical(train) {
-        let centerX = train.worldX + TRAIN_WIDTH / 2;
-        this.updateBodyVertical(train, centerX, train.vx);
+        let prevCX = train.worldX + TRAIN_WIDTH / 2;
+        this.updateBodyVertical(train, prevCX, train.vx);
+        let prev = train;
         for (const cart of train.carts) {
-            centerX = this.trailAlongTrack(centerX, TRAIN_WIDTH);
+            if (prev.airborne) {
+                const centerX = prevCX - TRAIN_WIDTH * Math.cos(prev.angle);
+                cart.centerX = centerX;
+                cart.elev = prev.elev + TRAIN_WIDTH * Math.sin(prev.angle);
+                cart.vy = prev.vy;
+                cart.airborne = true;
+                cart.angle += (prev.angle - cart.angle) * TRAIN_ANGLE_LERP;
+                prev = cart;
+                prevCX = centerX;
+                continue;
+            }
+
+            const centerX = this.trailAlongTrack(prevCX, TRAIN_WIDTH);
             cart.centerX = centerX;
+            if (cart.airborne) {
+                const elevFront = this.getElevation(centerX + AXLE_OFFSET);
+                const elevRear  = this.getElevation(centerX - AXLE_OFFSET);
+                cart.elev = (elevFront + elevRear) / 2;
+                cart.vy = 0;
+                cart.airborne = false;
+                cart.angle = -Math.atan2(elevFront - elevRear, 2 * AXLE_OFFSET);
+            }
             this.updateBodyVertical(cart, centerX, train.vx);
+
+            // Follower ski-jumped while the leader is still on the rails —
+            // haul it back to the coupled pose so the consist doesn't open.
+            if (cart.airborne) {
+                cart.centerX = prevCX - TRAIN_WIDTH * Math.cos(prev.angle);
+                cart.elev = prev.elev + TRAIN_WIDTH * Math.sin(prev.angle);
+                cart.vy = prev.vy;
+                const elevFront = this.getElevation(cart.centerX + AXLE_OFFSET);
+                const elevRear  = this.getElevation(cart.centerX - AXLE_OFFSET);
+                const chordElev = (elevFront + elevRear) / 2;
+                if (cart.elev <= chordElev) {
+                    cart.elev = chordElev;
+                    cart.vy = 0;
+                    cart.airborne = false;
+                    cart.angle = -Math.atan2(elevFront - elevRear, 2 * AXLE_OFFSET);
+                } else {
+                    cart.airborne = true;
+                    cart.angle += (prev.angle - cart.angle) * TRAIN_ANGLE_LERP;
+                }
+            }
+
+            prev = cart;
+            prevCX = cart.centerX;
         }
     }
 
@@ -1422,6 +1472,87 @@ class TrainGame {
         }
     }
 
+    // Race-progress strip (top-right). Thin course line with start/finish ticks;
+    // mountain theme adds a faint elevation silhouette under the markers.
+    drawMinimap(ctx) {
+        const W = this.canvas.width;
+        const isMountain = this.theme === 'mountain';
+        const mapW = Math.round(Math.min(220, Math.max(140, W * 0.22)));
+        const mapH = isMountain ? 34 : 14;
+        const pad  = 10;
+        const x0   = W - mapW - pad;
+        const y0   = pad;
+        const lineY = isMountain ? y0 + mapH - 4 : y0 + mapH / 2;
+
+        ctx.fillStyle = 'rgba(0,0,0,0.32)';
+        ctx.fillRect(x0 - 6, y0 - 4, mapW + 12, mapH + 10);
+
+        if (isMountain) {
+            const elevScale = (mapH - 6) / MOUNTAIN_PEAK_HEIGHT;
+            ctx.beginPath();
+            ctx.moveTo(x0, lineY);
+            for (let i = 0; i <= mapW; i++) {
+                const elev = getMountainElevation((i / mapW) * FINISH_LINE_WORLD_X);
+                ctx.lineTo(x0 + i, lineY - elev * elevScale);
+            }
+            ctx.lineTo(x0 + mapW, lineY);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(255,255,255,0.14)';
+            ctx.fill();
+
+            ctx.beginPath();
+            for (let i = 0; i <= mapW; i++) {
+                const elev = getMountainElevation((i / mapW) * FINISH_LINE_WORLD_X);
+                const ey = lineY - elev * elevScale;
+                if (i === 0) ctx.moveTo(x0 + i, ey);
+                else ctx.lineTo(x0 + i, ey);
+            }
+            ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x0, lineY);
+        ctx.lineTo(x0 + mapW, lineY);
+        ctx.stroke();
+
+        // Start / finish ticks
+        ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x0, lineY - 5);
+        ctx.lineTo(x0, lineY + 5);
+        ctx.moveTo(x0 + mapW, lineY - 5);
+        ctx.lineTo(x0 + mapW, lineY + 5);
+        ctx.stroke();
+
+        const markerY = (worldX) => {
+            if (!isMountain) return lineY;
+            const elev = getMountainElevation(
+                Math.min(Math.max(worldX, 0), FINISH_LINE_WORLD_X)
+            );
+            return lineY - elev * ((mapH - 6) / MOUNTAIN_PEAK_HEIGHT);
+        };
+        const drawMarker = (worldX, color) => {
+            const t = Math.min(Math.max(worldX / FINISH_LINE_WORLD_X, 0), 1);
+            const mx = x0 + t * mapW;
+            const my = markerY(worldX);
+            ctx.beginPath();
+            ctx.arc(mx, my, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        };
+
+        drawMarker(this.opponent.worldX, '#3498db');
+        drawMarker(this.train.worldX, '#e74c3c');
+    }
+
     drawResult(ctx) {
         const { result, endTime } = this.gameState;
         // Wait 2.5 s after race ends so the crowd boarding animation plays out first
@@ -1632,6 +1763,7 @@ class TrainGame {
         for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
 
         // ── HUD ─────────────────────────────────────────────────────────────
+        this.drawMinimap(ctx);
         const activeBoosts = activeBoostsNow;
         const boostPct     = activeBoosts * 5;
         document.getElementById('speed').textContent =
