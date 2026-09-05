@@ -29,7 +29,8 @@ const MOUNTAIN_SIGMA       = 500;               // visual bell curve width
 const MOUNTAIN_PHYSICS_PEAK  = 40;
 const MOUNTAIN_PHYSICS_SIGMA = MOUNTAIN_SIGMA;
 const MOUNTAIN_GRAVITY       = 4.0;             // slope effect on speed (when enabled)
-const TRACK_SLOPE_PHYSICS    = false;           // hills are visual only — no speed gravity
+const TRACK_SLOPE_PHYSICS    = false;           // no uphill/downhill speed gravity
+const TRAIN_PHYSICS_ENABLED  = false;           // no elevation, pitch, or airborne — flat racing
 const OPPONENT_SPEED_RESPONSIVENESS = 0.2;      // match player accel when seeking target speed
 
 // ─── Tie system ─────────────────────────────────────────────────────────────
@@ -367,25 +368,35 @@ class TrainGame {
     }
 
     getElevation(worldX) {
+        if (!TRAIN_PHYSICS_ENABLED) return 0;
         if (this.theme === 'mountain') return getMountainElevation(worldX, this.mountainCenter);
         if (this.theme === 'candy')    return getCandyElevation(worldX);
         return 0;
     }
 
     getSlope(worldX) {
+        if (!TRAIN_PHYSICS_ENABLED) return 0;
         if (this.theme === 'mountain') return getMountainSlope(worldX, this.mountainCenter);
         if (this.theme === 'candy')    return getCandySlope(worldX);
         return 0;
     }
 
     getPhysicsSlope(worldX) {
+        if (!TRAIN_PHYSICS_ENABLED || !TRACK_SLOPE_PHYSICS) return 0;
         if (this.theme === 'mountain') return getMountainPhysicsSlope(worldX, this.mountainCenter);
         if (this.theme === 'candy')    return getCandyPhysicsSlope(worldX);
         return 0;
     }
 
+    // Theme terrain for minimap/scenery only — independent of train physics.
+    getVisualElevation(worldX) {
+        if (this.theme === 'mountain') return getMountainElevation(worldX, this.mountainCenter);
+        if (this.theme === 'candy')    return getCandyElevation(worldX);
+        return 0;
+    }
+
     hasElevatedTrack() {
-        return this.theme === 'mountain' || this.theme === 'candy';
+        return TRAIN_PHYSICS_ENABLED && (this.theme === 'mountain' || this.theme === 'candy');
     }
 
     // Shared slope gravity for player and opponent (additive, same curve).
@@ -1776,7 +1787,7 @@ class TrainGame {
             ctx.beginPath();
             ctx.moveTo(x0, lineY);
             for (let i = 0; i <= mapW; i++) {
-                const elev = this.getElevation((i / mapW) * this.finishLineWorldX);
+                const elev = this.getVisualElevation((i / mapW) * this.finishLineWorldX);
                 ctx.lineTo(x0 + i, lineY - (elev + baseElev) * elevScale);
             }
             ctx.lineTo(x0 + mapW, lineY);
@@ -1786,7 +1797,7 @@ class TrainGame {
 
             ctx.beginPath();
             for (let i = 0; i <= mapW; i++) {
-                const elev = this.getElevation((i / mapW) * this.finishLineWorldX);
+                const elev = this.getVisualElevation((i / mapW) * this.finishLineWorldX);
                 const ey = lineY - (elev + baseElev) * elevScale;
                 if (i === 0) ctx.moveTo(x0 + i, ey);
                 else ctx.lineTo(x0 + i, ey);
@@ -1815,7 +1826,7 @@ class TrainGame {
 
         const markerY = (worldX) => {
             if (!isMountain && !isCandy) return lineY;
-            const elev = this.getElevation(
+            const elev = this.getVisualElevation(
                 Math.min(Math.max(worldX, 0), this.finishLineWorldX)
             );
             if (isCandy) {
