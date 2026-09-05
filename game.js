@@ -1,4 +1,8 @@
-const FINISH_LINE_WORLD_X = 10000;
+const BASE_FINISH_LINE = 20000;  // 2× original 10k
+const MAX_FINISH_LINE  = 30000;  // 3× original 10k
+const LENGTH_PER_WIN   = 2000;   // each session win adds length up to max
+const ORIGINAL_FINISH_LINE = 10000; // reference distance for speed scaling
+const BASE_CRUISE_SPEED = 3;        // cruise at ORIGINAL_FINISH_LINE
 const TRAIN_WIDTH  = 160;
 const TRAIN_HEIGHT = 62;
 const CAMERA_LERP  = 0.08;
@@ -8,11 +12,11 @@ const HORIZON_Y    = 200;  // y where sky meets land
 const SEGMENT_LEN  = 2500; // world units per theme segment (sahara → city → sahara → city)
 const STREET_Y     = 358;  // city street surface y
 const PILLAR_GAP   = 120;  // bridge support spacing
+const THEMES       = ['sahara', 'city', 'mountain', 'candy'];
 
 // ─── Mountain theme constants ──────────────────────────────────────────────
 // Visual curve: steep bell curve (max ±60° slope at steepest points)
 const MOUNTAIN_PEAK_HEIGHT = 2285;              // visual elevation in pixels
-const MOUNTAIN_CENTER      = FINISH_LINE_WORLD_X / 2;  // 5000
 const MOUNTAIN_SIGMA       = 800;               // visual bell curve width
 
 // Physics curve: gentle slope (unchanged gameplay feel)
@@ -37,18 +41,33 @@ const OPPONENT_SPEED_VARIANCE = 0.05;
 const OPPONENT_TARGET_WIN_RATE = 0.75;
 const OPPONENT_BALANCE_WINDOW  = 4;
 
-function getMountainElevation(worldX) {
-    const dx = worldX - MOUNTAIN_CENTER;
+function pickTheme() {
+    return THEMES[Math.floor(Math.random() * THEMES.length)];
+}
+
+function raceLengthForWins(winCount) {
+    return Math.min(MAX_FINISH_LINE, BASE_FINISH_LINE + winCount * LENGTH_PER_WIN);
+}
+
+// Longer races run faster so duration grows slower than distance.
+// 10k → 1.0× speed, 20k → 1.5×, 30k → 2.0× (half the distance growth).
+function cruiseSpeedForLength(finishLineWorldX) {
+    const lengthRatio = finishLineWorldX / ORIGINAL_FINISH_LINE;
+    return BASE_CRUISE_SPEED * (1 + 0.5 * (lengthRatio - 1));
+}
+
+function getMountainElevation(worldX, center) {
+    const dx = worldX - center;
     return MOUNTAIN_PEAK_HEIGHT * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
 }
 
-function getMountainSlope(worldX) {
-    const dx = worldX - MOUNTAIN_CENTER;
-    return -getMountainElevation(worldX) * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
+function getMountainSlope(worldX, center) {
+    const dx = worldX - center;
+    return -getMountainElevation(worldX, center) * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
 }
 
-function getMountainPhysicsSlope(worldX) {
-    const dx = worldX - MOUNTAIN_CENTER;
+function getMountainPhysicsSlope(worldX, center) {
+    const dx = worldX - center;
     const elev = MOUNTAIN_PHYSICS_PEAK * Math.exp(-(dx * dx) / (2 * MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA));
     return -elev * dx / (MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA);
 }
@@ -123,6 +142,61 @@ function makeAlpinePeak(x) {
     };
 }
 
+function makeCloud(x) {
+    const w = 70 + Math.random() * 90;
+    const h = 28 + Math.random() * 22;
+    const y = 40 + Math.random() * 90;
+    const tint = Math.random();
+    const color = tint < 0.33 ? '#fff5fb' : tint < 0.66 ? '#ffe8f4' : '#f0f8ff';
+    return { x, type: 'cloud', w, h, y, color };
+}
+
+function makeCandyHill(x) {
+    const w     = 100 + Math.random() * 140;
+    const h     = 45  + Math.random() * 70;
+    const peakX = w * (0.3 + Math.random() * 0.4);
+    const hue   = [330, 300, 280, 160, 40][Math.floor(Math.random() * 5)];
+    const sat   = 45 + Math.random() * 25;
+    const lgt   = 68 + Math.random() * 12;
+    return {
+        x, type: 'candyHill',
+        w, h, peakX,
+        color:  `hsl(${hue},${sat}%,${lgt}%)`,
+        shadow: `hsl(${hue},${sat}%,${lgt - 12}%)`,
+        snowH:  0,
+    };
+}
+
+function makeRainbow(x) {
+    return {
+        x, type: 'rainbow',
+        w: 140 + Math.random() * 80,
+        h: 70  + Math.random() * 40,
+    };
+}
+
+function makeLollipop(x) {
+    const hues = [0, 320, 280, 200, 140, 50];
+    return {
+        x, type: 'lollipop',
+        stickH: 28 + Math.floor(Math.random() * 18),
+        radius: 10 + Math.floor(Math.random() * 8),
+        hue:    hues[Math.floor(Math.random() * hues.length)],
+        swirl:  Math.random() < 0.5,
+    };
+}
+
+function makeGumdrop(x) {
+    const hues = [340, 300, 200, 140, 50, 20];
+    return {
+        x, type: 'gumdrop',
+        y: TRACK_FRONT - 8,
+        w: 14 + Math.floor(Math.random() * 12),
+        h: 12 + Math.floor(Math.random() * 10),
+        hue: hues[Math.floor(Math.random() * hues.length)],
+    };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TrainGame {
@@ -149,7 +223,10 @@ class TrainGame {
         this.cameraX = 0;
         this.cameraY = 0;
 
-        this.cruiseSpeed = 3;
+        this.winCount = 0;
+        this.finishLineWorldX = raceLengthForWins(this.winCount);
+        this.mountainCenter = this.finishLineWorldX / 2;
+        this.cruiseSpeed = cruiseSpeedForLength(this.finishLineWorldX);
         this.opponentDifficulty = {
             baseMultiplier: 1,
             hasSeenLoss: false,
@@ -165,7 +242,7 @@ class TrainGame {
             vx: 0,
             topSpeed: this.cruiseSpeed, // average speed across the race after difficulty/randomisation
             slant: slantDir * 1.0,      // speed offset at race start / finish
-            boostBudget: FINISH_LINE_WORLD_X * 0.40,  // 40 % of race distance
+            boostBudget: this.finishLineWorldX * 0.40,  // 40 % of race distance
             boosting: false,
             wheelFrame: 0,
             initialRampDone: false,
@@ -187,7 +264,7 @@ class TrainGame {
         this._boostFlashTimer = null;
 
         // Pick one theme for the whole race (re-randomised on restart)
-        { const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain'; }
+        this.theme = pickTheme();
 
         this.layers = [
             { name: 'mountains', speed: 0.3, objects: [] },
@@ -255,15 +332,15 @@ class TrainGame {
     }
 
     getElevation(worldX) {
-        return this.theme === 'mountain' ? getMountainElevation(worldX) : 0;
+        return this.theme === 'mountain' ? getMountainElevation(worldX, this.mountainCenter) : 0;
     }
 
     getSlope(worldX) {
-        return this.theme === 'mountain' ? getMountainSlope(worldX) : 0;
+        return this.theme === 'mountain' ? getMountainSlope(worldX, this.mountainCenter) : 0;
     }
 
     getPhysicsSlope(worldX) {
-        return this.theme === 'mountain' ? getMountainPhysicsSlope(worldX) : 0;
+        return this.theme === 'mountain' ? getMountainPhysicsSlope(worldX, this.mountainCenter) : 0;
     }
 
     generateInitialScenery() {
@@ -291,7 +368,7 @@ class TrainGame {
         const segLens = [];
         for (let i = 0; i < n; i++) segLens.push(380 + Math.random() * 320);
         const totalLen = segLens.reduce((a, b) => a + b, 0);
-        const startX = (FINISH_LINE_WORLD_X - totalLen) / 2 + (Math.random() - 0.5) * 500;
+        const startX = (this.finishLineWorldX - totalLen) / 2 + (Math.random() - 0.5) * 500;
         return [{ startX, endX: startX + totalLen }];
     }
 
@@ -309,6 +386,17 @@ class TrainGame {
             if      (layer.name === 'mountains') layer.objects.push(makeAlpinePeak(x));
             else if (layer.name === 'trees')     layer.objects.push(makeTreeCluster(x));
             else                                 layer.objects.push(makeRock(x));
+        } else if (theme === 'candy') {
+            if (layer.name === 'mountains') {
+                const roll = Math.random();
+                if (roll < 0.45)      layer.objects.push(makeCloud(x));
+                else if (roll < 0.80) layer.objects.push(makeCandyHill(x));
+                else                  layer.objects.push(makeRainbow(x));
+            } else if (layer.name === 'trees') {
+                layer.objects.push(makeLollipop(x));
+            } else {
+                layer.objects.push(makeGumdrop(x));
+            }
         } else {
             // city: only background layer gets buildings; other layers skipped (city ground is procedural)
             if (layer.name === 'mountains') layer.objects.push(makeBuilding(x));
@@ -329,7 +417,7 @@ class TrainGame {
 
     spawnCrowd() {
         this.crowdSpawned = true;
-        const stoppedX = Math.max(this.train.worldX, FINISH_LINE_WORLD_X);
+        const stoppedX = Math.max(this.train.worldX, this.finishLineWorldX);
         const count = 24 + Math.floor(Math.random() * 12);  // 24–36 people
         for (let i = 0; i < count; i++) {
             const side = Math.random() < 0.5 ? 1 : -1;
@@ -420,10 +508,14 @@ class TrainGame {
     }
 
     reset(newTheme = false) {
+        if (this.gameState.result === 'win') this.winCount++;
         this.adjustOpponentDifficulty(this.gameState.result);
+        this.finishLineWorldX = raceLengthForWins(this.winCount);
+        this.mountainCenter = this.finishLineWorldX / 2;
+        this.cruiseSpeed = cruiseSpeedForLength(this.finishLineWorldX);
 
         if (newTheme) {
-            const r = Math.random(); this.theme = r < 0.33 ? 'sahara' : r < 0.66 ? 'city' : 'mountain';
+            this.theme = pickTheme();
         }
 
         this.train.worldX = 0;
@@ -441,7 +533,7 @@ class TrainGame {
         this.opponent.worldX = 0;
         this.opponent.vx = 0;
         this.opponent.slant = slantDir * 1.0;
-        this.opponent.boostBudget = FINISH_LINE_WORLD_X * 0.40;
+        this.opponent.boostBudget = this.finishLineWorldX * 0.40;
         this.opponent.boosting = false;
         this.opponent.wheelFrame = 0;
         this.opponent.initialRampDone = false;
@@ -610,8 +702,8 @@ class TrainGame {
     }
 
     checkFinish() {
-        const pf = this.train.worldX    >= FINISH_LINE_WORLD_X;
-        const of = this.opponent.worldX >= FINISH_LINE_WORLD_X;
+        const pf = this.train.worldX    >= this.finishLineWorldX;
+        const of = this.opponent.worldX >= this.finishLineWorldX;
         if (pf || of) {
             this.gameState.isRunning = false;
             if (pf && of) this.gameState.result = 'tie';
@@ -862,7 +954,7 @@ class TrainGame {
         if (!this.raceStarted) return;
 
         // Linear slant: fast-start fades to slow-finish (or reverse), averaging topSpeed
-        const progress    = Math.min(Math.max(this.opponent.worldX / FINISH_LINE_WORLD_X, 0), 1);
+        const progress    = Math.min(Math.max(this.opponent.worldX / this.finishLineWorldX, 0), 1);
         const slantSpeed  = this.opponent.topSpeed + this.opponent.slant * (1 - 2 * progress);
 
         // Opponent boost: activate when behind, spend budget (tracked in world-units)
@@ -1081,6 +1173,86 @@ class TrainGame {
         }
     }
 
+    drawCloud(ctx, obj, screenX) {
+        const { w, h, y, color } = obj;
+        ctx.fillStyle = color;
+        // Soft overlapping ellipses for a fluffy cloud
+        ctx.beginPath();
+        ctx.ellipse(screenX + w * 0.30, y + h * 0.55, w * 0.28, h * 0.42, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX + w * 0.55, y + h * 0.40, w * 0.35, h * 0.50, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX + w * 0.75, y + h * 0.55, w * 0.26, h * 0.38, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX + w * 0.48, y + h * 0.65, w * 0.32, h * 0.35, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    drawRainbow(ctx, obj, screenX) {
+        const { w, h } = obj;
+        const cx = screenX + w / 2;
+        const cy = HORIZON_Y + 8 - Math.max(0, (h - 70) * 0.15);
+        const bands = ['#ff6b6b', '#ffa94d', '#ffe066', '#69db7c', '#74c0fc', '#b197fc'];
+        for (let i = 0; i < bands.length; i++) {
+            const outerR = w / 2 - i * 5;
+            const innerR = outerR - 5;
+            if (innerR <= 0) break;
+            ctx.beginPath();
+            ctx.arc(cx, cy, outerR, Math.PI, 0, false);
+            ctx.arc(cx, cy, innerR, 0, Math.PI, true);
+            ctx.closePath();
+            ctx.fillStyle = bands[i];
+            ctx.globalAlpha = 0.75;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    drawLollipop(ctx, obj, screenX) {
+        const baseY = TRACK_BACK - 8;
+        const r = obj.radius;
+        const stickTop = baseY - obj.stickH;
+        ctx.fillStyle = '#f8f0e3';
+        ctx.fillRect(Math.round(screenX + r - 2), stickTop, 4, obj.stickH);
+        ctx.fillStyle = `hsl(${obj.hue},75%,58%)`;
+        ctx.beginPath();
+        ctx.arc(screenX + r, stickTop, r, 0, Math.PI * 2);
+        ctx.fill();
+        if (obj.swirl) {
+            ctx.strokeStyle = `hsl(${obj.hue},80%,78%)`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(screenX + r, stickTop, r * 0.55, 0.2, Math.PI * 1.4);
+            ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.beginPath();
+        ctx.arc(screenX + r - r * 0.3, stickTop - r * 0.3, r * 0.28, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    drawGumdrop(ctx, obj, screenX) {
+        const { w, h, y, hue } = obj;
+        ctx.fillStyle = `hsl(${hue},70%,55%)`;
+        ctx.beginPath();
+        ctx.moveTo(screenX, y);
+        ctx.quadraticCurveTo(screenX + w / 2, y - h, screenX + w, y);
+        ctx.quadraticCurveTo(screenX + w / 2, y + h * 0.25, screenX, y);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.beginPath();
+        ctx.ellipse(screenX + w * 0.35, y - h * 0.35, w * 0.18, h * 0.15, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    drawCandyGround(ctx) {
+        const W = this.canvas.width, H = this.canvas.height;
+        const grad = ctx.createLinearGradient(0, HORIZON_Y, 0, H);
+        grad.addColorStop(0,   '#f7c6e0');
+        grad.addColorStop(0.35,'#e8d4f8');
+        grad.addColorStop(0.7, '#d4f0e8');
+        grad.addColorStop(1,   '#c8e6f5');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, HORIZON_Y, W, H - HORIZON_Y);
+    }
+
     // Flame shoots to the LEFT from (x, y) — the back of a rightward-moving train
     drawFlame(ctx, x, y) {
         const p = this.renderer.pixelSize;          // 4 screen-px per art-px
@@ -1262,7 +1434,7 @@ class TrainGame {
         // Trace the curve across screen width — use the FRONT track as ground reference
         for (let sx = 0; sx <= W; sx += step) {
             const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-            const elev = getMountainElevation(worldX);
+            const elev = getMountainElevation(worldX, this.mountainCenter);
             const gy = TRACK_FRONT + 6 - elev;
             if (sx === 0) ctx.moveTo(sx, gy);
             else          ctx.lineTo(sx, gy);
@@ -1282,9 +1454,9 @@ class TrainGame {
         const points = [];
         for (let sx = -8; sx <= W + 8; sx += step) {
             const wx = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-            const elev = getMountainElevation(wx);
+            const elev = getMountainElevation(wx, this.mountainCenter);
             const gy = baseGroundY - elev;
-            const slope = getMountainSlope(wx);
+            const slope = getMountainSlope(wx, this.mountainCenter);
             points.push({ sx, gy, slope });
         }
 
@@ -1293,9 +1465,9 @@ class TrainGame {
         ctx.fillStyle = '#5C3D1E';
         for (let sx = -tieOffset; sx < W + 24; sx += 24) {
             const wx = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-            const elev = getMountainElevation(wx);
+            const elev = getMountainElevation(wx, this.mountainCenter);
             const gy = baseGroundY - elev;
-            const slope = getMountainSlope(wx);
+            const slope = getMountainSlope(wx, this.mountainCenter);
             const angle = Math.atan(slope);
             ctx.save();
             ctx.translate(sx, gy);
@@ -1449,19 +1621,19 @@ class TrainGame {
         ctx.globalAlpha = 1;
     }
 
-    drawTrack(ctx, groundY, scrollSpeed) {
+    drawTrack(ctx, groundY, scrollSpeed, candy = false) {
         const offset = (this.cameraX * scrollSpeed) % 24;
-        ctx.fillStyle = '#5C3D1E';
+        ctx.fillStyle = candy ? '#c47a9e' : '#5C3D1E';
         for (let x = -offset; x < this.canvas.width + 24; x += 24) {
             ctx.fillRect(x - 1, groundY - 5, 7, 5);
         }
-        ctx.fillStyle = '#A0A0A0';
+        ctx.fillStyle = candy ? '#f5d0ea' : '#A0A0A0';
         ctx.fillRect(0, groundY - 6, this.canvas.width, 2);
         ctx.fillRect(0, groundY - 2, this.canvas.width, 2);
     }
 
     drawFinishLine(ctx) {
-        const screenX = this.worldToScreen(FINISH_LINE_WORLD_X);
+        const screenX = this.worldToScreen(this.finishLineWorldX);
         if (screenX < -24 || screenX > this.canvas.width + 24) return;
         const ts = 8;
         for (let y = 0; y < this.canvas.height; y += ts) {
@@ -1492,7 +1664,7 @@ class TrainGame {
             ctx.beginPath();
             ctx.moveTo(x0, lineY);
             for (let i = 0; i <= mapW; i++) {
-                const elev = getMountainElevation((i / mapW) * FINISH_LINE_WORLD_X);
+                const elev = getMountainElevation((i / mapW) * this.finishLineWorldX, this.mountainCenter);
                 ctx.lineTo(x0 + i, lineY - elev * elevScale);
             }
             ctx.lineTo(x0 + mapW, lineY);
@@ -1502,7 +1674,7 @@ class TrainGame {
 
             ctx.beginPath();
             for (let i = 0; i <= mapW; i++) {
-                const elev = getMountainElevation((i / mapW) * FINISH_LINE_WORLD_X);
+                const elev = getMountainElevation((i / mapW) * this.finishLineWorldX, this.mountainCenter);
                 const ey = lineY - elev * elevScale;
                 if (i === 0) ctx.moveTo(x0 + i, ey);
                 else ctx.lineTo(x0 + i, ey);
@@ -1532,12 +1704,13 @@ class TrainGame {
         const markerY = (worldX) => {
             if (!isMountain) return lineY;
             const elev = getMountainElevation(
-                Math.min(Math.max(worldX, 0), FINISH_LINE_WORLD_X)
+                Math.min(Math.max(worldX, 0), this.finishLineWorldX),
+                this.mountainCenter
             );
             return lineY - elev * ((mapH - 6) / MOUNTAIN_PEAK_HEIGHT);
         };
         const drawMarker = (worldX, color) => {
-            const t = Math.min(Math.max(worldX / FINISH_LINE_WORLD_X, 0), 1);
+            const t = Math.min(Math.max(worldX / this.finishLineWorldX, 0), 1);
             const mx = x0 + t * mapW;
             const my = markerY(worldX);
             ctx.beginPath();
@@ -1597,6 +1770,14 @@ class TrainGame {
             sky.addColorStop(1,    '#8dcaf0');  // pale blue at bottom
             ctx.fillStyle = sky;
             ctx.fillRect(0, 0, W, H);
+        } else if (theme === 'candy') {
+            const sky = ctx.createLinearGradient(0, 0, 0, H);
+            sky.addColorStop(0,    '#b8a0f0');  // soft lavender
+            sky.addColorStop(0.35, '#f5b8d8');  // pink
+            sky.addColorStop(0.55, '#ffe8f0');  // pale blush
+            sky.addColorStop(1,    '#c8f0e0');  // mint near ground
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, W, H);
         } else {
             const sky = ctx.createLinearGradient(0, 0, 0, H);
             sky.addColorStop(0,    '#6baed6');
@@ -1613,12 +1794,16 @@ class TrainGame {
             ctx.translate(0, this.cameraY);
         }
 
-        // ── Background layer (mountains or city buildings) ───────────────────
+        // ── Background layer (mountains, city buildings, or candy scenery) ───
         const mLayer = this.layers.find(l => l.name === 'mountains');
         for (const obj of mLayer.objects) {
             const sx = obj.x - this.cameraX * 0.3;
-            if (obj.type === 'building') this.drawBuilding(ctx, obj, sx);
-            else                         this.drawMountain(ctx, obj, sx);
+            if (obj.type === 'building')      this.drawBuilding(ctx, obj, sx);
+            else if (obj.type === 'cloud')    this.drawCloud(ctx, obj, sx);
+            else if (obj.type === 'rainbow')  this.drawRainbow(ctx, obj, sx);
+            else if (obj.type === 'alpine' || obj.type === 'candyHill' || obj.type === 'mountain') {
+                this.drawMountain(ctx, obj, sx);
+            }
         }
 
         // ── City-specific ground, street & pillars ───────────────────────────
@@ -1632,15 +1817,22 @@ class TrainGame {
             this.drawMountainGround(ctx);
         }
 
-        // ── Sahara/mountain mid-layer: trees ─────────────────────────────────
-        if (theme === 'sahara' || theme === 'mountain') {
+        // ── Candy ground ─────────────────────────────────────────────────────
+        if (theme === 'candy') {
+            this.drawCandyGround(ctx);
+        }
+
+        // ── Mid-layer: trees / lollipops ─────────────────────────────────────
+        if (theme === 'sahara' || theme === 'mountain' || theme === 'candy') {
             const tLayer = this.layers.find(l => l.name === 'trees');
             for (const obj of tLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.6;
-                if (theme === 'mountain') {
+                if (obj.type === 'lollipop') {
+                    this.drawLollipop(ctx, obj, sx);
+                } else if (theme === 'mountain') {
                     // Convert parallax screen position to world X to get elevation
                     const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-                    this.drawTreeCluster(ctx, obj, sx, getMountainElevation(worldX));
+                    this.drawTreeCluster(ctx, obj, sx, getMountainElevation(worldX, this.mountainCenter));
                 } else {
                     this.drawTreeCluster(ctx, obj, sx);
                 }
@@ -1649,12 +1841,13 @@ class TrainGame {
 
         // ── Tracks + trains (both themes) ───────────────────────────────────
         const isCity = theme === 'city';
+        const isCandy = theme === 'candy';
         // Hover bob for city theme (no wheels, trains float)
         const oppBob  = isCity ? Math.sin(Date.now() / 400) * 2.5 : 0;
         const trainBob = isCity ? Math.sin(Date.now() / 400 + 1) * 2.5 : 0;
 
         if (theme === 'mountain') this.drawMountainTrack(ctx, TRACK_BACK);
-        else                     this.drawTrack(ctx, TRACK_BACK, 0.85);
+        else                     this.drawTrack(ctx, TRACK_BACK, 0.85, isCandy);
         const opponentSX = this.worldToScreen(this.opponent.worldX);
         const oppY = this.opponent.y + oppBob;
         if (theme === 'mountain') {
@@ -1684,22 +1877,26 @@ class TrainGame {
             }
         }
 
-        // Sahara/mountain rocks
-        if (theme === 'sahara' || theme === 'mountain') {
+        // Sahara/mountain/candy foreground props
+        if (theme === 'sahara' || theme === 'mountain' || theme === 'candy') {
             const rLayer = this.layers.find(l => l.name === 'rocks');
             for (const obj of rLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.9;
+                if (obj.type === 'gumdrop') {
+                    this.drawGumdrop(ctx, obj, sx);
+                    continue;
+                }
                 let rockY = obj.y;
                 if (theme === 'mountain') {
                     const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-                    rockY -= getMountainElevation(worldX);
+                    rockY -= getMountainElevation(worldX, this.mountainCenter);
                 }
                 this.renderer.renderSprite(SCENERY_SPRITES.rock, sx, rockY);
             }
         }
 
         if (theme === 'mountain') this.drawMountainTrack(ctx, TRACK_FRONT);
-        else                     this.drawTrack(ctx, TRACK_FRONT, 1.0);
+        else                     this.drawTrack(ctx, TRACK_FRONT, 1.0, isCandy);
         this.drawFinishLine(ctx);
 
         const trainSX         = this.worldToScreen(this.train.worldX);
@@ -1769,7 +1966,7 @@ class TrainGame {
         document.getElementById('speed').textContent =
             Math.round(this.train.vx * 10) / 10 + (activeBoosts > 0 ? ` 🔥+${boostPct}%` : '');
         document.getElementById('distance').textContent =
-            `${Math.round(this.gameState.distance)} / ${FINISH_LINE_WORLD_X}`;
+            `${Math.round(this.gameState.distance)} / ${this.finishLineWorldX}`;
     }
 
     gameLoop = () => {
