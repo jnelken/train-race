@@ -19,7 +19,9 @@ const THEMES       = ['sahara', 'city', 'mountain', 'candy'];
 // trains remain on a 400px canvas when the camera follows the player — the old
 // 2285px peak shoved a trailing NPC off the bottom so it looked "stopped"
 // just before the climb.
-const MOUNTAIN_PEAK_HEIGHT = 220;               // visual elevation in pixels
+const MOUNTAIN_PEAK_HEIGHT = 220;               // default / mid visual elevation (px)
+const MOUNTAIN_PEAK_MIN    = 160;               // per-race random peak floor
+const MOUNTAIN_PEAK_MAX    = 240;               // per-race random peak ceiling (canvas-safe)
 const MOUNTAIN_SIGMA       = 500;               // visual bell curve width
 
 // Physics curve: must stay aligned with the visual hill. A much wider physics
@@ -30,7 +32,8 @@ const MOUNTAIN_PHYSICS_PEAK  = 40;
 const MOUNTAIN_PHYSICS_SIGMA = MOUNTAIN_SIGMA;
 const MOUNTAIN_GRAVITY       = 4.0;             // slope effect on speed (when enabled)
 const TRACK_SLOPE_PHYSICS    = false;           // no uphill/downhill speed gravity
-const TRAIN_PHYSICS_ENABLED  = false;           // no elevation, pitch, or airborne — flat racing
+// When false: no airborne ballistics / slope speed — trains still snap to visual hills.
+const TRAIN_PHYSICS_ENABLED  = false;
 const OPPONENT_SPEED_RESPONSIVENESS = 0.2;      // match player accel when seeking target speed
 
 // ─── Tie system ─────────────────────────────────────────────────────────────
@@ -67,14 +70,14 @@ function cruiseSpeedForLength(finishLineWorldX) {
     return BASE_CRUISE_SPEED * (1 + 0.5 * (lengthRatio - 1));
 }
 
-function getMountainElevation(worldX, center) {
+function getMountainElevation(worldX, center, peakHeight = MOUNTAIN_PEAK_HEIGHT) {
     const dx = worldX - center;
-    return MOUNTAIN_PEAK_HEIGHT * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
+    return peakHeight * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
 }
 
-function getMountainSlope(worldX, center) {
+function getMountainSlope(worldX, center, peakHeight = MOUNTAIN_PEAK_HEIGHT) {
     const dx = worldX - center;
-    return -getMountainElevation(worldX, center) * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
+    return -getMountainElevation(worldX, center, peakHeight) * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
 }
 
 function getMountainPhysicsSlope(worldX, center) {
@@ -83,26 +86,80 @@ function getMountainPhysicsSlope(worldX, center) {
     return -elev * dx / (MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA);
 }
 
-// ─── Candy theme: rolling semicircle waves (smooth sine ≈ linked arcs) ─────
-const CANDY_WAVE_LEN      = 900;   // full hill+valley wavelength in world units
-const CANDY_WAVE_AMP      = 72;    // visual elevation amplitude (px)
+// ─── Candy theme: rolling sine waves (params regenerated each race) ────────
+const CANDY_WAVE_AMP_DEFAULT = 72;  // fallback amp for padding / minimap
 // Keep physics amp low: player applies slope*MOUNTAIN_GRAVITY additively each
 // frame. At amp 28, max drag (~0.78) crushed accel (0.2) and pinned vx at 0.2.
 // amp 5 → max drag ~0.14, so hills slow you without stalling.
-const CANDY_PHYSICS_AMP   = 5;
+const CANDY_PHYSICS_AMP = 5;
 
-function getCandyElevation(worldX) {
-    return CANDY_WAVE_AMP * Math.sin((2 * Math.PI * worldX) / CANDY_WAVE_LEN);
+function makeCandyWaveProfile() {
+    return {
+        wavelength: 700 + Math.random() * 400,       // 700–1100
+        amp:        50 + Math.random() * 30,         // 50–80
+        phase:      Math.random() * Math.PI * 2,
+        harmonic:   0.15 + Math.random() * 0.2,      // 2nd harmonic strength
+    };
 }
 
-function getCandySlope(worldX) {
-    return CANDY_WAVE_AMP * (2 * Math.PI / CANDY_WAVE_LEN)
-        * Math.cos((2 * Math.PI * worldX) / CANDY_WAVE_LEN);
+function getCandyElevation(worldX, wave) {
+    if (!wave) return 0;
+    const k = (2 * Math.PI) / wave.wavelength;
+    return wave.amp * Math.sin(k * worldX + wave.phase)
+        + wave.amp * wave.harmonic * Math.sin(2 * k * worldX + wave.phase * 2);
 }
 
-function getCandyPhysicsSlope(worldX) {
-    return CANDY_PHYSICS_AMP * (2 * Math.PI / CANDY_WAVE_LEN)
-        * Math.cos((2 * Math.PI * worldX) / CANDY_WAVE_LEN);
+function getCandySlope(worldX, wave) {
+    if (!wave) return 0;
+    const k = (2 * Math.PI) / wave.wavelength;
+    return wave.amp * k * Math.cos(k * worldX + wave.phase)
+        + wave.amp * wave.harmonic * (2 * k) * Math.cos(2 * k * worldX + wave.phase * 2);
+}
+
+function getCandyPhysicsSlope(worldX, wave) {
+    if (!wave) return 0;
+    const k = (2 * Math.PI) / wave.wavelength;
+    // Scale visual slope down to the small physics amp band.
+    const visual = getCandySlope(worldX, wave);
+    return visual * (CANDY_PHYSICS_AMP / Math.max(wave.amp, 1));
+}
+
+// ─── Sahara / valley: a few tiny gaussian bumps per race ───────────────────
+function makeSaharaHills(finishLineWorldX) {
+    const count = 2 + Math.floor(Math.random() * 3); // 2–4
+    const hills = [];
+    const margin = 500;
+    const span = Math.max(finishLineWorldX - margin * 2, 1000);
+    for (let i = 0; i < count; i++) {
+        const t = (i + 0.35 + Math.random() * 0.3) / count;
+        hills.push({
+            center: margin + t * span + (Math.random() - 0.5) * 200,
+            sigma:  150 + Math.random() * 130,   // 150–280
+            amp:    12 + Math.random() * 16,     // 12–28
+        });
+    }
+    return hills;
+}
+
+function getBumpElevation(worldX, hills) {
+    if (!hills || hills.length === 0) return 0;
+    let elev = 0;
+    for (const h of hills) {
+        const dx = worldX - h.center;
+        elev += h.amp * Math.exp(-(dx * dx) / (2 * h.sigma * h.sigma));
+    }
+    return elev;
+}
+
+function getBumpSlope(worldX, hills) {
+    if (!hills || hills.length === 0) return 0;
+    let slope = 0;
+    for (const h of hills) {
+        const dx = worldX - h.center;
+        const elev = h.amp * Math.exp(-(dx * dx) / (2 * h.sigma * h.sigma));
+        slope += -elev * dx / (h.sigma * h.sigma);
+    }
+    return slope;
 }
 
 // Fresh vertical-physics state for a train's trailing carts. centerX is
@@ -258,7 +315,6 @@ class TrainGame {
 
         this.winCount = 0;
         this.finishLineWorldX = raceLengthForWins(this.winCount);
-        this.mountainCenter = this.finishLineWorldX / 2;
         this.cruiseSpeed = cruiseSpeedForLength(this.finishLineWorldX);
         this.opponentDifficulty = {
             baseMultiplier: 1,
@@ -298,6 +354,7 @@ class TrainGame {
 
         // Pick one theme for the whole race (re-randomised on restart)
         this.theme = pickTheme();
+        this.generateRaceTerrain();
 
         this.layers = [
             { name: 'mountains', speed: 0.3, objects: [] },
@@ -364,36 +421,71 @@ class TrainGame {
         return worldX - this.cameraX + this.canvas.width / 2 - TRAIN_WIDTH / 2;
     }
 
+    // Per-race hill params: candy sine, mountain peak place/height, sahara bumps.
+    generateRaceTerrain() {
+        this.candyWave = null;
+        this.saharaHills = [];
+        this.mountainCenter = this.finishLineWorldX / 2;
+        this.mountainPeakHeight = MOUNTAIN_PEAK_HEIGHT;
+
+        if (this.theme === 'candy') {
+            this.candyWave = makeCandyWaveProfile();
+        } else if (this.theme === 'mountain') {
+            this.mountainCenter = this.finishLineWorldX * (0.25 + Math.random() * 0.5);
+            this.mountainPeakHeight = MOUNTAIN_PEAK_MIN
+                + Math.random() * (MOUNTAIN_PEAK_MAX - MOUNTAIN_PEAK_MIN);
+        } else if (this.theme === 'sahara') {
+            this.saharaHills = makeSaharaHills(this.finishLineWorldX);
+        }
+    }
+
+    visualAmpMax() {
+        if (this.theme === 'mountain') return this.mountainPeakHeight;
+        if (this.theme === 'candy') {
+            const w = this.candyWave;
+            return w ? w.amp * (1 + w.harmonic) : CANDY_WAVE_AMP_DEFAULT;
+        }
+        if (this.theme === 'sahara' && this.saharaHills.length) {
+            return Math.max(...this.saharaHills.map(h => h.amp));
+        }
+        return 0;
+    }
+
     getElevation(worldX) {
-        if (!TRAIN_PHYSICS_ENABLED) return 0;
-        if (this.theme === 'mountain') return getMountainElevation(worldX, this.mountainCenter);
-        if (this.theme === 'candy')    return getCandyElevation(worldX);
+        if (this.theme === 'mountain') {
+            return getMountainElevation(worldX, this.mountainCenter, this.mountainPeakHeight);
+        }
+        if (this.theme === 'candy') return getCandyElevation(worldX, this.candyWave);
+        if (this.theme === 'sahara') return getBumpElevation(worldX, this.saharaHills);
         return 0;
     }
 
     getSlope(worldX) {
-        if (!TRAIN_PHYSICS_ENABLED) return 0;
-        if (this.theme === 'mountain') return getMountainSlope(worldX, this.mountainCenter);
-        if (this.theme === 'candy')    return getCandySlope(worldX);
+        if (this.theme === 'mountain') {
+            return getMountainSlope(worldX, this.mountainCenter, this.mountainPeakHeight);
+        }
+        if (this.theme === 'candy') return getCandySlope(worldX, this.candyWave);
+        if (this.theme === 'sahara') return getBumpSlope(worldX, this.saharaHills);
         return 0;
     }
 
     getPhysicsSlope(worldX) {
-        if (!TRAIN_PHYSICS_ENABLED || !TRACK_SLOPE_PHYSICS) return 0;
+        if (!TRACK_SLOPE_PHYSICS) return 0;
         if (this.theme === 'mountain') return getMountainPhysicsSlope(worldX, this.mountainCenter);
-        if (this.theme === 'candy')    return getCandyPhysicsSlope(worldX);
+        if (this.theme === 'candy') return getCandyPhysicsSlope(worldX, this.candyWave);
+        if (this.theme === 'sahara') return getBumpSlope(worldX, this.saharaHills) * 0.15;
         return 0;
     }
 
-    // Theme terrain for minimap/scenery only — independent of train physics.
+    // Theme terrain for minimap — same profile as gameplay elevation.
     getVisualElevation(worldX) {
-        if (this.theme === 'mountain') return getMountainElevation(worldX, this.mountainCenter);
-        if (this.theme === 'candy')    return getCandyElevation(worldX);
-        return 0;
+        return this.getElevation(worldX);
     }
 
     hasElevatedTrack() {
-        return TRAIN_PHYSICS_ENABLED && (this.theme === 'mountain' || this.theme === 'candy');
+        if (this.theme === 'mountain' || this.theme === 'candy') return true;
+        if (this.theme === 'sahara') return this.saharaHills.length > 0;
+        return false;
     }
 
     // Shared slope gravity for player and opponent (additive, same curve).
@@ -577,12 +669,12 @@ class TrainGame {
         if (this.gameState.result === 'win') this.winCount++;
         this.adjustOpponentDifficulty(this.gameState.result);
         this.finishLineWorldX = raceLengthForWins(this.winCount);
-        this.mountainCenter = this.finishLineWorldX / 2;
         this.cruiseSpeed = cruiseSpeedForLength(this.finishLineWorldX);
 
         if (newTheme) {
             this.theme = pickTheme();
         }
+        this.generateRaceTerrain();
 
         this.train.worldX = 0;
         this.train.vx = 0;
@@ -820,6 +912,17 @@ class TrainGame {
         const elevFront = this.getElevation(centerWorldX + AXLE_OFFSET);
         const elevRear  = this.getElevation(centerWorldX - AXLE_OFFSET);
         const chordElev = (elevFront + elevRear) / 2;
+
+        // Visual-only hills: glue to the rails (no ballistic airborne).
+        if (!TRAIN_PHYSICS_ENABLED) {
+            body.elev = chordElev;
+            body.vy = 0;
+            body.airborne = false;
+            const targetAngle = -Math.atan2(elevFront - elevRear, 2 * AXLE_OFFSET);
+            body.angle += (targetAngle - body.angle) * TRAIN_ANGLE_LERP;
+            return;
+        }
+
         const prevElev  = body.elev;
         body.vy   -= TRAIN_FALL_GRAVITY;
         body.elev += body.vy;
@@ -1322,8 +1425,8 @@ class TrainGame {
             if (sx === 0) ctx.moveTo(sx, gy);
             else          ctx.lineTo(sx, gy);
         }
-        ctx.lineTo(W, H + CANDY_WAVE_AMP + 400);
-        ctx.lineTo(0, H + CANDY_WAVE_AMP + 400);
+        ctx.lineTo(W, H + this.visualAmpMax() + 400);
+        ctx.lineTo(0, H + this.visualAmpMax() + 400);
         ctx.closePath();
         ctx.fill();
     }
@@ -1515,8 +1618,8 @@ class TrainGame {
             else          ctx.lineTo(sx, gy);
         }
         // Extend bottom well past screen (camera shifts the viewport)
-        ctx.lineTo(W, H + MOUNTAIN_PEAK_HEIGHT);
-        ctx.lineTo(0, H + MOUNTAIN_PEAK_HEIGHT);
+        ctx.lineTo(W, H + this.mountainPeakHeight);
+        ctx.lineTo(0, H + this.mountainPeakHeight);
         ctx.closePath();
         ctx.fill();
     }
@@ -1721,27 +1824,31 @@ class TrainGame {
     }
 
     // Race-progress strip (top-right). Thin course line with start/finish ticks;
-    // mountain theme adds a faint elevation silhouette under the markers.
+    // elevated themes add a faint elevation silhouette under the markers.
     drawMinimap(ctx) {
         const W = this.canvas.width;
         const isMountain = this.theme === 'mountain';
         const isCandy = this.theme === 'candy';
-        const lightTheme = isCandy || this.theme === 'sahara';
+        const isSahara = this.theme === 'sahara';
+        const showElev = isMountain || isCandy || (isSahara && this.saharaHills.length > 0);
+        const lightTheme = isCandy || isSahara;
         const mapW = Math.round(Math.min(220, Math.max(140, W * 0.22)));
-        const mapH = (isMountain || isCandy) ? 34 : 14;
+        const mapH = showElev ? 34 : 14;
         const pad  = 10;
         const x0   = W - mapW - pad;
         const y0   = pad;
-        const lineY = (isMountain || isCandy) ? y0 + mapH - 4 : y0 + mapH / 2;
+        const lineY = showElev ? y0 + mapH - 4 : y0 + mapH / 2;
+        const ampMax = Math.max(this.visualAmpMax(), 1);
+        // Candy swings above and below baseline; mountain/sahara are positive bumps.
+        const elevRange = isCandy ? ampMax * 2 : ampMax;
+        const baseElev = isCandy ? ampMax : 0;
+        const elevScale = (mapH - 6) / elevRange;
 
         // Solid-enough panel so the strip stays readable on pastel candy / sahara skies
         ctx.fillStyle = lightTheme ? 'rgba(20,16,28,0.72)' : 'rgba(0,0,0,0.45)';
         ctx.fillRect(x0 - 6, y0 - 4, mapW + 12, mapH + 10);
 
-        if (isMountain || isCandy) {
-            const peak = isMountain ? MOUNTAIN_PEAK_HEIGHT : CANDY_WAVE_AMP;
-            const elevScale = (mapH - 6) / (peak * (isCandy ? 2 : 1));
-            const baseElev = isCandy ? CANDY_WAVE_AMP : 0;
+        if (showElev) {
             ctx.beginPath();
             ctx.moveTo(x0, lineY);
             for (let i = 0; i <= mapW; i++) {
@@ -1783,15 +1890,11 @@ class TrainGame {
         ctx.stroke();
 
         const markerY = (worldX) => {
-            if (!isMountain && !isCandy) return lineY;
+            if (!showElev) return lineY;
             const elev = this.getVisualElevation(
                 Math.min(Math.max(worldX, 0), this.finishLineWorldX)
             );
-            if (isCandy) {
-                const elevScale = (mapH - 6) / (CANDY_WAVE_AMP * 2);
-                return lineY - (elev + CANDY_WAVE_AMP) * elevScale;
-            }
-            return lineY - elev * ((mapH - 6) / MOUNTAIN_PEAK_HEIGHT);
+            return lineY - (elev + baseElev) * elevScale;
         };
         const drawMarker = (worldX, color) => {
             const t = Math.min(Math.max(worldX / this.finishLineWorldX, 0), 1);
@@ -1921,7 +2024,7 @@ class TrainGame {
                 if (obj.type === 'lollipop') {
                     const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
                     this.drawLollipop(ctx, obj, sx, this.getElevation(worldX));
-                } else if (theme === 'mountain' || theme === 'candy') {
+                } else if (theme === 'mountain' || theme === 'candy' || theme === 'sahara') {
                     const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
                     this.drawTreeCluster(ctx, obj, sx, this.getElevation(worldX));
                 } else {
