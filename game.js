@@ -42,6 +42,7 @@ const OPPONENT_TARGET_WIN_RATE = 0.75;
 const OPPONENT_BALANCE_WINDOW  = 4;
 const OPPONENT_MAX_SPEED_MULT  = 1.20; // never average faster than +20% over cruise
 const PLAYER_BOOST_PER_TOKEN   = 0.05; // each active press: +5% for 1s, uncapped
+const BOOST_HOLD_FRAMES_PER_TOKEN = 3; // while held, ~20 tokens/sec per input at 60fps
 
 function pickTheme() {
     return THEMES[Math.floor(Math.random() * THEMES.length)];
@@ -284,8 +285,10 @@ class TrainGame {
         this.wheelFrame = 0;
         this.wheelAnimationSpeed = 0.15;
         this.paused = false;
-        this.boostTokens = [];  // timestamps of space presses; each lasts 1 s, uncapped stack
+        this.boostTokens = [];  // timestamps of boost inputs; each lasts 1 s, uncapped stack
         this._boostFlashTimer = null;
+        this.boostHoldAcc = 0;     // fractional frames toward next held-boost token
+        this.boostBtnHeld = false; // mouse/touch BOOST button held
 
         // Pick one theme for the whole race (re-randomised on restart)
         this.theme = pickTheme();
@@ -595,6 +598,8 @@ class TrainGame {
         this.paused = false;
         this.wheelFrame = 0;
         this.boostTokens = [];
+        this.boostHoldAcc = 0;
+        this.boostBtnHeld = false;
 
         this.layers = [
             { name: 'mountains', speed: 0.3, objects: [] },
@@ -648,6 +653,35 @@ class TrainGame {
         this.boostTokens.push(Date.now());
     }
 
+    flashBoostButton() {
+        const boostBtn = document.getElementById('boostBtn');
+        boostBtn.classList.add('active');
+        clearTimeout(this._boostFlashTimer);
+        this._boostFlashTimer = setTimeout(() => boostBtn.classList.remove('active'), 120);
+    }
+
+    // How many boost inputs are currently held (Space, Right, on-screen button).
+    heldBoostInputCount() {
+        return (this.keys[' '] ? 1 : 0)
+            + (this.keys['ArrowRight'] ? 1 : 0)
+            + (this.boostBtnHeld ? 1 : 0);
+    }
+
+    // While boost inputs are held, keep stacking tokens — keydown alone can't
+    // exceed ~10 taps/s (~+50%), which felt like a hard cap.
+    applyHeldBoosts() {
+        const held = this.heldBoostInputCount();
+        if (held <= 0 || this.paused || !this.gameState.isRunning) {
+            this.boostHoldAcc = 0;
+            return;
+        }
+        this.boostHoldAcc += held;
+        while (this.boostHoldAcc >= BOOST_HOLD_FRAMES_PER_TOKEN) {
+            this.boostHoldAcc -= BOOST_HOLD_FRAMES_PER_TOKEN;
+            this.boostTokens.push(Date.now());
+        }
+    }
+
     resetUI() {
         const btn = document.getElementById('pauseBtn');
         btn.textContent = '\u23F8';
@@ -684,10 +718,7 @@ class TrainGame {
             if (e.key === ' ' || e.key === 'ArrowRight') {
                 e.preventDefault();
                 this.addBoost();
-                const boostBtn = document.getElementById('boostBtn');
-                boostBtn.classList.add('active');
-                clearTimeout(this._boostFlashTimer);
-                this._boostFlashTimer = setTimeout(() => boostBtn.classList.remove('active'), 120);
+                this.flashBoostButton();
             }
         });
         window.addEventListener('keyup', (e) => { this.keys[e.key] = false; });
@@ -726,23 +757,33 @@ class TrainGame {
 
         pauseBtn.addEventListener('click', () => { this.togglePause(); });
 
-        // Boost button — mouse
+        // Boost button — mouse (hold to keep stacking)
         boostBtn.addEventListener('mousedown', () => {
+            this.boostBtnHeld = true;
             this.addBoost();
             boostBtn.classList.add('active');
         });
-        boostBtn.addEventListener('mouseup', () => { boostBtn.classList.remove('active'); });
-        boostBtn.addEventListener('mouseleave', () => { boostBtn.classList.remove('active'); });
+        const releaseBoostBtn = () => {
+            this.boostBtnHeld = false;
+            boostBtn.classList.remove('active');
+        };
+        boostBtn.addEventListener('mouseup', releaseBoostBtn);
+        boostBtn.addEventListener('mouseleave', releaseBoostBtn);
 
-        // Boost button — touch
+        // Boost button — touch (hold to keep stacking)
         boostBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
+            this.boostBtnHeld = true;
             this.addBoost();
             boostBtn.classList.add('active');
         }, { passive: false });
         boostBtn.addEventListener('touchend', (e) => {
             e.preventDefault();
-            boostBtn.classList.remove('active');
+            releaseBoostBtn();
+        }, { passive: false });
+        boostBtn.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            releaseBoostBtn();
         }, { passive: false });
     }
 
@@ -930,8 +971,9 @@ class TrainGame {
             return;
         }
 
-        // Active boost tokens: each press gives +5 % for 1 s, uncapped stack
+        // Active boost tokens: each press/hold tick gives +5 % for 1 s, uncapped
         const now = Date.now();
+        this.applyHeldBoosts();
         this.boostTokens = this.boostTokens.filter(t => now - t < 1000);
         const activeBoosts   = this.boostTokens.length;
         const boostMultiplier = 1 + activeBoosts * PLAYER_BOOST_PER_TOKEN;
