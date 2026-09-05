@@ -77,7 +77,10 @@ function getMountainPhysicsSlope(worldX, center) {
 // ─── Candy theme: rolling semicircle waves (smooth sine ≈ linked arcs) ─────
 const CANDY_WAVE_LEN      = 900;   // full hill+valley wavelength in world units
 const CANDY_WAVE_AMP      = 72;    // visual elevation amplitude (px)
-const CANDY_PHYSICS_AMP   = 28;    // gentler slope for speed gravity
+// Keep physics amp low: player applies slope*MOUNTAIN_GRAVITY additively each
+// frame. At amp 28, max drag (~0.78) crushed accel (0.2) and pinned vx at 0.2.
+// amp 5 → max drag ~0.14, so hills slow you without stalling.
+const CANDY_PHYSICS_AMP   = 5;
 
 function getCandyElevation(worldX) {
     return CANDY_WAVE_AMP * Math.sin((2 * Math.PI * worldX) / CANDY_WAVE_LEN);
@@ -671,9 +674,9 @@ class TrainGame {
             if (e.key === 'ArrowLeft' || e.key === 'a') {
                 this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.cruiseSpeed * 0.5);
             }
-            if (e.key === ' ') {
+            if (e.key === ' ' || e.key === 'ArrowRight') {
                 e.preventDefault();
-                this.boostTokens.push(Date.now());
+                this.addBoost();
                 const boostBtn = document.getElementById('boostBtn');
                 boostBtn.classList.add('active');
                 clearTimeout(this._boostFlashTimer);
