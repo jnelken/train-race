@@ -40,6 +40,8 @@ const OPPONENT_SPEED_STEP    = 0.05;
 const OPPONENT_SPEED_VARIANCE = 0.05;
 const OPPONENT_TARGET_WIN_RATE = 0.75;
 const OPPONENT_BALANCE_WINDOW  = 4;
+const OPPONENT_MAX_SPEED_MULT  = 1.20; // never average faster than +20% over cruise
+const PLAYER_BOOST_PER_TOKEN   = 0.05; // each active press: +5% for 1s, uncapped
 
 function pickTheme() {
     return THEMES[Math.floor(Math.random() * THEMES.length)];
@@ -70,6 +72,25 @@ function getMountainPhysicsSlope(worldX, center) {
     const dx = worldX - center;
     const elev = MOUNTAIN_PHYSICS_PEAK * Math.exp(-(dx * dx) / (2 * MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA));
     return -elev * dx / (MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA);
+}
+
+// ─── Candy theme: rolling semicircle waves (smooth sine ≈ linked arcs) ─────
+const CANDY_WAVE_LEN      = 900;   // full hill+valley wavelength in world units
+const CANDY_WAVE_AMP      = 72;    // visual elevation amplitude (px)
+const CANDY_PHYSICS_AMP   = 28;    // gentler slope for speed gravity
+
+function getCandyElevation(worldX) {
+    return CANDY_WAVE_AMP * Math.sin((2 * Math.PI * worldX) / CANDY_WAVE_LEN);
+}
+
+function getCandySlope(worldX) {
+    return CANDY_WAVE_AMP * (2 * Math.PI / CANDY_WAVE_LEN)
+        * Math.cos((2 * Math.PI * worldX) / CANDY_WAVE_LEN);
+}
+
+function getCandyPhysicsSlope(worldX) {
+    return CANDY_PHYSICS_AMP * (2 * Math.PI / CANDY_WAVE_LEN)
+        * Math.cos((2 * Math.PI * worldX) / CANDY_WAVE_LEN);
 }
 
 // Fresh vertical-physics state for a train's trailing carts. centerX is
@@ -260,7 +281,7 @@ class TrainGame {
         this.wheelFrame = 0;
         this.wheelAnimationSpeed = 0.15;
         this.paused = false;
-        this.boostTokens = [];  // timestamps of space presses; each lasts 1 s, max 4 active
+        this.boostTokens = [];  // timestamps of space presses; each lasts 1 s, uncapped stack
         this._boostFlashTimer = null;
 
         // Pick one theme for the whole race (re-randomised on restart)
@@ -332,15 +353,25 @@ class TrainGame {
     }
 
     getElevation(worldX) {
-        return this.theme === 'mountain' ? getMountainElevation(worldX, this.mountainCenter) : 0;
+        if (this.theme === 'mountain') return getMountainElevation(worldX, this.mountainCenter);
+        if (this.theme === 'candy')    return getCandyElevation(worldX);
+        return 0;
     }
 
     getSlope(worldX) {
-        return this.theme === 'mountain' ? getMountainSlope(worldX, this.mountainCenter) : 0;
+        if (this.theme === 'mountain') return getMountainSlope(worldX, this.mountainCenter);
+        if (this.theme === 'candy')    return getCandySlope(worldX);
+        return 0;
     }
 
     getPhysicsSlope(worldX) {
-        return this.theme === 'mountain' ? getMountainPhysicsSlope(worldX, this.mountainCenter) : 0;
+        if (this.theme === 'mountain') return getMountainPhysicsSlope(worldX, this.mountainCenter);
+        if (this.theme === 'candy')    return getCandyPhysicsSlope(worldX);
+        return 0;
+    }
+
+    hasElevatedTrack() {
+        return this.theme === 'mountain' || this.theme === 'candy';
     }
 
     generateInitialScenery() {
@@ -502,7 +533,11 @@ class TrainGame {
 
     configureOpponentSpeed() {
         const variance = 1 + (Math.random() * 2 - 1) * OPPONENT_SPEED_VARIANCE;
-        const raceMultiplier = Math.max(0.25, this.opponentDifficulty.baseMultiplier * variance);
+        // Difficulty can keep adapting, but race speed never exceeds +20% cruise.
+        const raceMultiplier = Math.min(
+            OPPONENT_MAX_SPEED_MULT,
+            Math.max(0.25, this.opponentDifficulty.baseMultiplier * variance)
+        );
         this.opponentDifficulty.raceMultiplier = raceMultiplier;
         this.opponent.topSpeed = this.cruiseSpeed * raceMultiplier;
     }
@@ -887,19 +922,19 @@ class TrainGame {
             return;
         }
 
-        // Active boost tokens: each press gives +5 % for 1 s, capped at 4 (= +20 %)
+        // Active boost tokens: each press gives +5 % for 1 s, uncapped stack
         const now = Date.now();
         this.boostTokens = this.boostTokens.filter(t => now - t < 1000);
-        const activeBoosts   = Math.min(this.boostTokens.length, 4);
-        const boostMultiplier = 1 + activeBoosts * 0.05;           // 1.00 – 1.20
-        const effectiveMax   = this.cruiseSpeed * boostMultiplier;  // 3.0 – 3.6
+        const activeBoosts   = this.boostTokens.length;
+        const boostMultiplier = 1 + activeBoosts * PLAYER_BOOST_PER_TOKEN;
+        const effectiveMax   = this.cruiseSpeed * boostMultiplier;
 
         // Friction first, then acceleration — raw equilibrium is 4.0,
-        // but the race caps the default cruise speed at 3.0 before boosts.
+        // but the race caps the default cruise speed at cruiseSpeed before boosts.
         this.train.vx *= this.train.friction;
 
         // Auto-accelerate: always push forward once the race has started.
-        // Boost tokens (tap / space) raise the ceiling by up to +20 %.
+        // Boost tokens (tap / space) raise the ceiling with no stack cap.
         if (this.raceStarted) {
             this.train.vx = Math.min(this.train.vx + this.train.acceleration * boostMultiplier, effectiveMax);
         }
@@ -956,8 +991,10 @@ class TrainGame {
         // Linear slant: fast-start fades to slow-finish (or reverse), averaging topSpeed
         const progress    = Math.min(Math.max(this.opponent.worldX / this.finishLineWorldX, 0), 1);
         const slantSpeed  = this.opponent.topSpeed + this.opponent.slant * (1 - 2 * progress);
+        const oppSpeedCap = this.cruiseSpeed * OPPONENT_MAX_SPEED_MULT;
 
-        // Opponent boost: activate when behind, spend budget (tracked in world-units)
+        // Opponent boost: activate when behind, spend budget (tracked in world-units).
+        // Instantaneous speed is still hard-capped at +20% cruise so average never exceeds that.
         const gap = this.opponent.worldX - this.train.worldX;
         if (!this.opponent.boosting && this.opponent.boostBudget > 0 && gap < -150) {
             this.opponent.boosting = true;
@@ -969,7 +1006,10 @@ class TrainGame {
                 this.opponent.boostBudget = Math.max(0, this.opponent.boostBudget);
             }
         }
-        const oppEffectiveTop = slantSpeed * (this.opponent.boosting ? 1.20 : 1.0);
+        const oppEffectiveTop = Math.min(
+            oppSpeedCap,
+            slantSpeed * (this.opponent.boosting ? OPPONENT_MAX_SPEED_MULT : 1.0)
+        );
 
         const tooFarAhead  =  this.canvas.width * 0.55;
         const tooFarBehind = -this.canvas.width * 0.55;
@@ -983,9 +1023,11 @@ class TrainGame {
 
         let targetSpeed;
         if      (gap > tooFarAhead)  targetSpeed = oppEffectiveTop * 0.4;
-        else if (gap < tooFarBehind) targetSpeed = Math.max(this.train.vx + 1.5, oppEffectiveTop);
+        else if (gap < tooFarBehind) targetSpeed = oppEffectiveTop; // catch up, but stay under +20% cruise
         else                         targetSpeed = oppEffectiveTop;
-        targetSpeed *= slopeMultiplier;
+        targetSpeed = Math.min(targetSpeed * slopeMultiplier, oppSpeedCap * Math.max(slopeMultiplier, 0));
+        // On downhill slopes slopeMultiplier can be >1; still never exceed the flat +20% cap.
+        targetSpeed = Math.min(targetSpeed, oppSpeedCap);
 
         const diff = targetSpeed - this.opponent.vx;
         if (!this.opponent.initialRampDone) {
@@ -996,6 +1038,7 @@ class TrainGame {
             this.opponent.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
         }
         this.opponent.vx = Math.max(this.opponent.vx, 0.2);
+        this.opponent.vx = Math.min(this.opponent.vx, oppSpeedCap);
 
         this.opponent.worldX    += this.opponent.vx;
         this.updateTrainVertical(this.opponent);
@@ -1205,8 +1248,8 @@ class TrainGame {
         }
     }
 
-    drawLollipop(ctx, obj, screenX) {
-        const baseY = TRACK_BACK - 8;
+    drawLollipop(ctx, obj, screenX, elevationOffset = 0) {
+        const baseY = TRACK_BACK - 8 - elevationOffset;
         const r = obj.radius;
         const stickTop = baseY - obj.stickH;
         ctx.fillStyle = '#f8f0e3';
@@ -1228,29 +1271,44 @@ class TrainGame {
         ctx.fill();
     }
 
-    drawGumdrop(ctx, obj, screenX) {
+    drawGumdrop(ctx, obj, screenX, elevationOffset = 0) {
         const { w, h, y, hue } = obj;
+        const gy = y - elevationOffset;
         ctx.fillStyle = `hsl(${hue},70%,55%)`;
         ctx.beginPath();
-        ctx.moveTo(screenX, y);
-        ctx.quadraticCurveTo(screenX + w / 2, y - h, screenX + w, y);
-        ctx.quadraticCurveTo(screenX + w / 2, y + h * 0.25, screenX, y);
+        ctx.moveTo(screenX, gy);
+        ctx.quadraticCurveTo(screenX + w / 2, gy - h, screenX + w, gy);
+        ctx.quadraticCurveTo(screenX + w / 2, gy + h * 0.25, screenX, gy);
         ctx.fill();
         ctx.fillStyle = 'rgba(255,255,255,0.4)';
         ctx.beginPath();
-        ctx.ellipse(screenX + w * 0.35, y - h * 0.35, w * 0.18, h * 0.15, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX + w * 0.35, gy - h * 0.35, w * 0.18, h * 0.15, 0, 0, Math.PI * 2);
         ctx.fill();
     }
 
     drawCandyGround(ctx) {
         const W = this.canvas.width, H = this.canvas.height;
-        const grad = ctx.createLinearGradient(0, HORIZON_Y, 0, H);
+        const step = 4;
+        const playerElev = this.getElevation(this.train.worldX + TRAIN_WIDTH / 2);
+        const surfaceY = TRACK_FRONT + 6 - playerElev;
+        const grad = ctx.createLinearGradient(0, surfaceY - 40, 0, surfaceY + 280);
         grad.addColorStop(0,   '#f7c6e0');
         grad.addColorStop(0.35,'#e8d4f8');
         grad.addColorStop(0.7, '#d4f0e8');
         grad.addColorStop(1,   '#c8e6f5');
         ctx.fillStyle = grad;
-        ctx.fillRect(0, HORIZON_Y, W, H - HORIZON_Y);
+        ctx.beginPath();
+        for (let sx = 0; sx <= W; sx += step) {
+            const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+            const elev = this.getElevation(worldX);
+            const gy = TRACK_FRONT + 6 - elev;
+            if (sx === 0) ctx.moveTo(sx, gy);
+            else          ctx.lineTo(sx, gy);
+        }
+        ctx.lineTo(W, H + CANDY_WAVE_AMP + 400);
+        ctx.lineTo(0, H + CANDY_WAVE_AMP + 400);
+        ctx.closePath();
+        ctx.fill();
     }
 
     // Flame shoots to the LEFT from (x, y) — the back of a rightward-moving train
@@ -1434,7 +1492,7 @@ class TrainGame {
         // Trace the curve across screen width — use the FRONT track as ground reference
         for (let sx = 0; sx <= W; sx += step) {
             const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-            const elev = getMountainElevation(worldX, this.mountainCenter);
+            const elev = this.getElevation(worldX);
             const gy = TRACK_FRONT + 6 - elev;
             if (sx === 0) ctx.moveTo(sx, gy);
             else          ctx.lineTo(sx, gy);
@@ -1449,25 +1507,26 @@ class TrainGame {
     drawMountainTrack(ctx, baseGroundY) {
         const W = this.canvas.width;
         const step = 4;
+        const candy = this.theme === 'candy';
 
         // Collect points along the track curve
         const points = [];
         for (let sx = -8; sx <= W + 8; sx += step) {
             const wx = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-            const elev = getMountainElevation(wx, this.mountainCenter);
+            const elev = this.getElevation(wx);
             const gy = baseGroundY - elev;
-            const slope = getMountainSlope(wx, this.mountainCenter);
+            const slope = this.getSlope(wx);
             points.push({ sx, gy, slope });
         }
 
         // Ties every 24px (world-aligned)
         const tieOffset = this.cameraX % 24;
-        ctx.fillStyle = '#5C3D1E';
+        ctx.fillStyle = candy ? '#c47a9e' : '#5C3D1E';
         for (let sx = -tieOffset; sx < W + 24; sx += 24) {
             const wx = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-            const elev = getMountainElevation(wx, this.mountainCenter);
+            const elev = this.getElevation(wx);
             const gy = baseGroundY - elev;
-            const slope = getMountainSlope(wx, this.mountainCenter);
+            const slope = this.getSlope(wx);
             const angle = Math.atan(slope);
             ctx.save();
             ctx.translate(sx, gy);
@@ -1477,7 +1536,7 @@ class TrainGame {
         }
 
         // Rails as connected line segments
-        ctx.strokeStyle = '#A0A0A0';
+        ctx.strokeStyle = candy ? '#f5d0ea' : '#A0A0A0';
         ctx.lineWidth = 2;
         for (const railOffset of [-6, -2]) {
             ctx.beginPath();
@@ -1649,23 +1708,28 @@ class TrainGame {
     drawMinimap(ctx) {
         const W = this.canvas.width;
         const isMountain = this.theme === 'mountain';
+        const isCandy = this.theme === 'candy';
+        const lightTheme = isCandy || this.theme === 'sahara';
         const mapW = Math.round(Math.min(220, Math.max(140, W * 0.22)));
-        const mapH = isMountain ? 34 : 14;
+        const mapH = (isMountain || isCandy) ? 34 : 14;
         const pad  = 10;
         const x0   = W - mapW - pad;
         const y0   = pad;
-        const lineY = isMountain ? y0 + mapH - 4 : y0 + mapH / 2;
+        const lineY = (isMountain || isCandy) ? y0 + mapH - 4 : y0 + mapH / 2;
 
-        ctx.fillStyle = 'rgba(0,0,0,0.32)';
+        // Solid-enough panel so the strip stays readable on pastel candy / sahara skies
+        ctx.fillStyle = lightTheme ? 'rgba(20,16,28,0.72)' : 'rgba(0,0,0,0.45)';
         ctx.fillRect(x0 - 6, y0 - 4, mapW + 12, mapH + 10);
 
-        if (isMountain) {
-            const elevScale = (mapH - 6) / MOUNTAIN_PEAK_HEIGHT;
+        if (isMountain || isCandy) {
+            const peak = isMountain ? MOUNTAIN_PEAK_HEIGHT : CANDY_WAVE_AMP;
+            const elevScale = (mapH - 6) / (peak * (isCandy ? 2 : 1));
+            const baseElev = isCandy ? CANDY_WAVE_AMP : 0;
             ctx.beginPath();
             ctx.moveTo(x0, lineY);
             for (let i = 0; i <= mapW; i++) {
-                const elev = getMountainElevation((i / mapW) * this.finishLineWorldX, this.mountainCenter);
-                ctx.lineTo(x0 + i, lineY - elev * elevScale);
+                const elev = this.getElevation((i / mapW) * this.finishLineWorldX);
+                ctx.lineTo(x0 + i, lineY - (elev + baseElev) * elevScale);
             }
             ctx.lineTo(x0 + mapW, lineY);
             ctx.closePath();
@@ -1674,8 +1738,8 @@ class TrainGame {
 
             ctx.beginPath();
             for (let i = 0; i <= mapW; i++) {
-                const elev = getMountainElevation((i / mapW) * this.finishLineWorldX, this.mountainCenter);
-                const ey = lineY - elev * elevScale;
+                const elev = this.getElevation((i / mapW) * this.finishLineWorldX);
+                const ey = lineY - (elev + baseElev) * elevScale;
                 if (i === 0) ctx.moveTo(x0 + i, ey);
                 else ctx.lineTo(x0 + i, ey);
             }
@@ -1684,7 +1748,7 @@ class TrainGame {
             ctx.stroke();
         }
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(x0, lineY);
@@ -1692,7 +1756,7 @@ class TrainGame {
         ctx.stroke();
 
         // Start / finish ticks
-        ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(x0, lineY - 5);
@@ -1702,11 +1766,14 @@ class TrainGame {
         ctx.stroke();
 
         const markerY = (worldX) => {
-            if (!isMountain) return lineY;
-            const elev = getMountainElevation(
-                Math.min(Math.max(worldX, 0), this.finishLineWorldX),
-                this.mountainCenter
+            if (!isMountain && !isCandy) return lineY;
+            const elev = this.getElevation(
+                Math.min(Math.max(worldX, 0), this.finishLineWorldX)
             );
+            if (isCandy) {
+                const elevScale = (mapH - 6) / (CANDY_WAVE_AMP * 2);
+                return lineY - (elev + CANDY_WAVE_AMP) * elevScale;
+            }
             return lineY - elev * ((mapH - 6) / MOUNTAIN_PEAK_HEIGHT);
         };
         const drawMarker = (worldX, color) => {
@@ -1717,7 +1784,7 @@ class TrainGame {
             ctx.arc(mx, my, 3.5, 0, Math.PI * 2);
             ctx.fillStyle = color;
             ctx.fill();
-            ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+            ctx.strokeStyle = 'rgba(0,0,0,0.55)';
             ctx.lineWidth = 1;
             ctx.stroke();
         };
@@ -1788,14 +1855,18 @@ class TrainGame {
             ctx.fillRect(0, 0, W, H);
         }
 
-        // ── Vertical camera shift for mountain theme ─────────────────────────
-        if (theme === 'mountain') {
+        // ── Vertical camera shift for elevated themes ────────────────────────
+        const elevated = this.hasElevatedTrack();
+        if (elevated) {
             ctx.save();
             ctx.translate(0, this.cameraY);
         }
 
         // ── Background layer (mountains, city buildings, or candy scenery) ───
         const mLayer = this.layers.find(l => l.name === 'mountains');
+        // Far layers lag vertically so height changes feel parallaxed
+        const bgVParallax = theme === 'candy' ? -this.cameraY * (1 - mLayer.speed) : 0;
+        if (bgVParallax) ctx.translate(0, bgVParallax);
         for (const obj of mLayer.objects) {
             const sx = obj.x - this.cameraX * 0.3;
             if (obj.type === 'building')      this.drawBuilding(ctx, obj, sx);
@@ -1805,6 +1876,7 @@ class TrainGame {
                 this.drawMountain(ctx, obj, sx);
             }
         }
+        if (bgVParallax) ctx.translate(0, -bgVParallax);
 
         // ── City-specific ground, street & pillars ───────────────────────────
         if (theme === 'city') {
@@ -1825,32 +1897,35 @@ class TrainGame {
         // ── Mid-layer: trees / lollipops ─────────────────────────────────────
         if (theme === 'sahara' || theme === 'mountain' || theme === 'candy') {
             const tLayer = this.layers.find(l => l.name === 'trees');
+            const midVParallax = theme === 'candy' ? -this.cameraY * (1 - tLayer.speed) : 0;
+            if (midVParallax) ctx.translate(0, midVParallax);
             for (const obj of tLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.6;
                 if (obj.type === 'lollipop') {
-                    this.drawLollipop(ctx, obj, sx);
-                } else if (theme === 'mountain') {
-                    // Convert parallax screen position to world X to get elevation
                     const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-                    this.drawTreeCluster(ctx, obj, sx, getMountainElevation(worldX, this.mountainCenter));
+                    this.drawLollipop(ctx, obj, sx, this.getElevation(worldX));
+                } else if (theme === 'mountain' || theme === 'candy') {
+                    const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+                    this.drawTreeCluster(ctx, obj, sx, this.getElevation(worldX));
                 } else {
                     this.drawTreeCluster(ctx, obj, sx);
                 }
             }
+            if (midVParallax) ctx.translate(0, -midVParallax);
         }
 
-        // ── Tracks + trains (both themes) ───────────────────────────────────
+        // ── Tracks + trains ─────────────────────────────────────────────────
         const isCity = theme === 'city';
         const isCandy = theme === 'candy';
         // Hover bob for city theme (no wheels, trains float)
         const oppBob  = isCity ? Math.sin(Date.now() / 400) * 2.5 : 0;
         const trainBob = isCity ? Math.sin(Date.now() / 400 + 1) * 2.5 : 0;
 
-        if (theme === 'mountain') this.drawMountainTrack(ctx, TRACK_BACK);
-        else                     this.drawTrack(ctx, TRACK_BACK, 0.85, isCandy);
+        if (elevated) this.drawMountainTrack(ctx, TRACK_BACK);
+        else          this.drawTrack(ctx, TRACK_BACK, 0.85, isCandy);
         const opponentSX = this.worldToScreen(this.opponent.worldX);
         const oppY = this.opponent.y + oppBob;
-        if (theme === 'mountain') {
+        if (elevated) {
             this.drawMountainCarts(ctx, this.opponent, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
             // Pivot on rail contact point (bottom-center of locomotive) using
             // the simulated tie-physics state — may be above the rails midair.
@@ -1880,29 +1955,33 @@ class TrainGame {
         // Sahara/mountain/candy foreground props
         if (theme === 'sahara' || theme === 'mountain' || theme === 'candy') {
             const rLayer = this.layers.find(l => l.name === 'rocks');
+            const fgVParallax = theme === 'candy' ? -this.cameraY * (1 - rLayer.speed) : 0;
+            if (fgVParallax) ctx.translate(0, fgVParallax);
             for (const obj of rLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.9;
                 if (obj.type === 'gumdrop') {
-                    this.drawGumdrop(ctx, obj, sx);
+                    const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
+                    this.drawGumdrop(ctx, obj, sx, this.getElevation(worldX));
                     continue;
                 }
                 let rockY = obj.y;
-                if (theme === 'mountain') {
+                if (elevated) {
                     const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
-                    rockY -= getMountainElevation(worldX, this.mountainCenter);
+                    rockY -= this.getElevation(worldX);
                 }
                 this.renderer.renderSprite(SCENERY_SPRITES.rock, sx, rockY);
             }
+            if (fgVParallax) ctx.translate(0, -fgVParallax);
         }
 
-        if (theme === 'mountain') this.drawMountainTrack(ctx, TRACK_FRONT);
-        else                     this.drawTrack(ctx, TRACK_FRONT, 1.0, isCandy);
+        if (elevated) this.drawMountainTrack(ctx, TRACK_FRONT);
+        else          this.drawTrack(ctx, TRACK_FRONT, 1.0, isCandy);
         this.drawFinishLine(ctx);
 
         const trainSX         = this.worldToScreen(this.train.worldX);
         const trainY          = this.train.y + trainBob;
-        const activeBoostsNow = Math.min(this.boostTokens.filter(t => Date.now() - t < 1000).length, 4);
-        if (theme === 'mountain') {
+        const activeBoostsNow = this.boostTokens.filter(t => Date.now() - t < 1000).length;
+        if (elevated) {
             this.drawMountainCarts(ctx, this.train, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
             // Pivot on rail contact point (bottom-center of locomotive) using
             // the simulated tie-physics state — may be above the rails midair.
@@ -1936,7 +2015,7 @@ class TrainGame {
         }
 
         // ── End vertical camera shift ──────────────────────────────────────
-        if (theme === 'mountain') {
+        if (elevated) {
             ctx.restore();
         }
 
