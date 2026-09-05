@@ -377,6 +377,13 @@ class TrainGame {
         return this.theme === 'mountain' || this.theme === 'candy';
     }
 
+    // Shared slope gravity for player and opponent (additive, same curve).
+    applyTrackGravity(body, minVx = 0.2) {
+        const slope = this.getPhysicsSlope(body.worldX + TRAIN_WIDTH / 2);
+        body.vx -= slope * MOUNTAIN_GRAVITY;
+        body.vx = Math.max(body.vx, minVx);
+    }
+
     generateInitialScenery() {
         for (const layer of this.layers) {
             // Pre-populate from slightly off left edge to 3 screen-widths ahead
@@ -899,8 +906,7 @@ class TrainGame {
         // ── Post-race: coast to stop, animate crowd, keep cars moving ──────────
         if (!this.gameState.isRunning) {
             this.train.vx    *= this.train.friction;
-            this.train.vx    -= this.getPhysicsSlope(this.train.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
-            this.train.vx     = Math.max(this.train.vx, 0);
+            this.applyTrackGravity(this.train, 0);
             this.train.worldX += this.train.vx;
             this.updateTrainVertical(this.train);
             this.train.y      = TRACK_FRONT - TRAIN_HEIGHT - this.train.elev;
@@ -909,8 +915,7 @@ class TrainGame {
             this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
             if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
             this.opponent.vx    *= this.train.friction;
-            this.opponent.vx    -= this.getPhysicsSlope(this.opponent.worldX + TRAIN_WIDTH / 2) * MOUNTAIN_GRAVITY;
-            this.opponent.vx     = Math.max(this.opponent.vx, 0);
+            this.applyTrackGravity(this.opponent, 0);
             this.opponent.worldX += this.opponent.vx;
             this.updateTrainVertical(this.opponent);
             this.opponent.y      = TRACK_BACK - TRAIN_HEIGHT - this.opponent.elev;
@@ -945,15 +950,10 @@ class TrainGame {
         if (this.keys['ArrowLeft'] || this.keys['a']) {
             this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.cruiseSpeed * 0.5);
         }
-        // Mountain slope gravity: uphill slows, downhill speeds. This uses the
-        // separate gentle physics curve — a stylized speed shaping applied even
-        // midair, which keeps vx steady across ground/air transitions (a
-        // conditional skip here caused vx to oscillate and the grounded state
-        // to flicker at sub-pixel scale).
+        // Mountain/candy slope gravity: uphill slows, downhill speeds. Same
+        // additive curve for player and opponent so hills stay fair.
         if (this.raceStarted) {
-            const playerSlope = this.getPhysicsSlope(this.train.worldX + TRAIN_WIDTH / 2);
-            this.train.vx -= playerSlope * MOUNTAIN_GRAVITY;
-            this.train.vx = Math.max(this.train.vx, 0.2);  // never roll backwards
+            this.applyTrackGravity(this.train);
         }
         this.train.worldX += this.train.vx;
         this.updateTrainVertical(this.train);
@@ -1014,23 +1014,15 @@ class TrainGame {
             slantSpeed * (this.opponent.boosting ? OPPONENT_MAX_SPEED_MULT : 1.0)
         );
 
+        // Flat-ground AI target (opponent cruise/boost capped at +20%).
+        // Slope gravity is applied afterward with the same additive rule as the player.
         const tooFarAhead  =  this.canvas.width * 0.55;
         const tooFarBehind = -this.canvas.width * 0.55;
 
-        // Scale target speed by the same ratio gravity imposes on the player.
-        // Player equilibrium = (accel - slope*G) / (1-friction), so the ratio
-        // vs flat ground is (1 - slope * G / accel).  Apply this to the opponent
-        // so both trains slow/speed proportionally on slopes.
-        const oppSlope = this.getPhysicsSlope(this.opponent.worldX + TRAIN_WIDTH / 2);
-        const slopeMultiplier = Math.max(1 - oppSlope * MOUNTAIN_GRAVITY / this.train.acceleration, 0.05);
-
         let targetSpeed;
         if      (gap > tooFarAhead)  targetSpeed = oppEffectiveTop * 0.4;
-        else if (gap < tooFarBehind) targetSpeed = oppEffectiveTop; // catch up, but stay under +20% cruise
+        else if (gap < tooFarBehind) targetSpeed = oppEffectiveTop;
         else                         targetSpeed = oppEffectiveTop;
-        targetSpeed = Math.min(targetSpeed * slopeMultiplier, oppSpeedCap * Math.max(slopeMultiplier, 0));
-        // On downhill slopes slopeMultiplier can be >1; still never exceed the flat +20% cap.
-        targetSpeed = Math.min(targetSpeed, oppSpeedCap);
 
         const diff = targetSpeed - this.opponent.vx;
         if (!this.opponent.initialRampDone) {
@@ -1040,8 +1032,7 @@ class TrainGame {
             const maxDelta = this.cruiseSpeed / (15 * 60);
             this.opponent.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
         }
-        this.opponent.vx = Math.max(this.opponent.vx, 0.2);
-        this.opponent.vx = Math.min(this.opponent.vx, oppSpeedCap);
+        this.applyTrackGravity(this.opponent);
 
         this.opponent.worldX    += this.opponent.vx;
         this.updateTrainVertical(this.opponent);
