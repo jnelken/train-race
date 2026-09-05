@@ -51,7 +51,8 @@ const OPPONENT_TARGET_WIN_RATE = 0.75;
 const OPPONENT_BALANCE_WINDOW  = 4;
 const OPPONENT_MAX_SPEED_MULT  = 1.20; // never average faster than +20% over cruise
 const PLAYER_BOOST_PER_TOKEN   = 0.05; // each active press: +5% for 1s, uncapped
-const BOOST_HOLD_FRAMES_PER_TOKEN = 3; // while held, ~20 tokens/sec per input at 60fps
+const BOOST_HOLD_DELAY_MS      = 200;  // taps shorter than this stay a single +5%
+const BOOST_HOLD_INTERVAL_MS   = 200;  // after delay, +5% per held input every 200ms
 
 function pickTheme() {
     return THEMES[Math.floor(Math.random() * THEMES.length)];
@@ -296,7 +297,8 @@ class TrainGame {
         this.paused = false;
         this.boostTokens = [];  // timestamps of boost inputs; each lasts 1 s, uncapped stack
         this._boostFlashTimer = null;
-        this.boostHoldAcc = 0;     // fractional frames toward next held-boost token
+        this.boostHoldStartedAt = 0; // when current hold began (0 = not holding)
+        this.boostHoldNextAt = 0;    // next time a held-boost token may fire
         this.boostBtnHeld = false; // mouse/touch BOOST button held
 
         // Pick one theme for the whole race (re-randomised on restart)
@@ -619,7 +621,8 @@ class TrainGame {
         this.paused = false;
         this.wheelFrame = 0;
         this.boostTokens = [];
-        this.boostHoldAcc = 0;
+        this.boostHoldStartedAt = 0;
+        this.boostHoldNextAt = 0;
         this.boostBtnHeld = false;
 
         this.layers = [
@@ -688,18 +691,24 @@ class TrainGame {
             + (this.boostBtnHeld ? 1 : 0);
     }
 
-    // While boost inputs are held, keep stacking tokens — keydown alone can't
-    // exceed ~10 taps/s (~+50%), which felt like a hard cap.
+    // Sustained hold stacks extra +5% tokens, but only after a short delay so a
+    // clean tap stays a single +5% (the old every-3-frames rate made one press ~+20%).
     applyHeldBoosts() {
         const held = this.heldBoostInputCount();
+        const now = Date.now();
         if (held <= 0 || this.paused || !this.gameState.isRunning) {
-            this.boostHoldAcc = 0;
+            this.boostHoldStartedAt = 0;
+            this.boostHoldNextAt = 0;
             return;
         }
-        this.boostHoldAcc += held;
-        while (this.boostHoldAcc >= BOOST_HOLD_FRAMES_PER_TOKEN) {
-            this.boostHoldAcc -= BOOST_HOLD_FRAMES_PER_TOKEN;
-            this.boostTokens.push(Date.now());
+        if (!this.boostHoldStartedAt) {
+            this.boostHoldStartedAt = now;
+            this.boostHoldNextAt = now + BOOST_HOLD_DELAY_MS;
+            return;
+        }
+        while (now >= this.boostHoldNextAt) {
+            for (let i = 0; i < held; i++) this.boostTokens.push(this.boostHoldNextAt);
+            this.boostHoldNextAt += BOOST_HOLD_INTERVAL_MS;
         }
     }
 
