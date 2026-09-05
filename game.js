@@ -15,9 +15,12 @@ const PILLAR_GAP   = 120;  // bridge support spacing
 const THEMES       = ['sahara', 'city', 'mountain', 'candy'];
 
 // ─── Mountain theme constants ──────────────────────────────────────────────
-// Visual curve: steep bell curve (max ±60° slope at steepest points)
-const MOUNTAIN_PEAK_HEIGHT = 2285;              // visual elevation in pixels
-const MOUNTAIN_SIGMA       = 800;               // visual bell curve width
+// Visual curve: one big mid-race hill. Peak must stay small enough that both
+// trains remain on a 400px canvas when the camera follows the player — the old
+// 2285px peak shoved a trailing NPC off the bottom so it looked "stopped"
+// just before the climb.
+const MOUNTAIN_PEAK_HEIGHT = 220;               // visual elevation in pixels
+const MOUNTAIN_SIGMA       = 500;               // visual bell curve width
 
 // Physics curve: gentle slope (unchanged gameplay feel)
 const MOUNTAIN_PHYSICS_PEAK  = 120;
