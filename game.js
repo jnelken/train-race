@@ -22,11 +22,15 @@ const THEMES       = ['sahara', 'city', 'mountain', 'candy'];
 const MOUNTAIN_PEAK_HEIGHT = 220;               // visual elevation in pixels
 const MOUNTAIN_SIGMA       = 500;               // visual bell curve width
 
-// Physics curve: gentle slope (unchanged gameplay feel)
-const MOUNTAIN_PHYSICS_PEAK  = 120;
-const MOUNTAIN_PHYSICS_SIGMA = 2200;
+// Physics curve: must stay aligned with the visual hill. A much wider physics
+// sigma (formerly 2200 vs visual 500) drained speed on minimap-flat track;
+// the NPC's tiny maxDelta (~0.005/frame) could not fight that drain and got
+// pinned at the 0.2 floor long before the drawn hill.
+const MOUNTAIN_PHYSICS_PEAK  = 40;
+const MOUNTAIN_PHYSICS_SIGMA = MOUNTAIN_SIGMA;
 const MOUNTAIN_GRAVITY       = 4.0;             // slope effect on speed (when enabled)
 const TRACK_SLOPE_PHYSICS    = false;           // hills are visual only — no speed gravity
+const OPPONENT_SPEED_RESPONSIVENESS = 0.2;      // match player accel when seeking target speed
 
 // ─── Tie system ─────────────────────────────────────────────────────────────
 // Trains are held to the rails by gravity, not welded to them. Each body
@@ -1077,7 +1081,9 @@ class TrainGame {
             this.opponent.vx += diff * 0.08;
             if (Math.abs(diff) < 0.05) this.opponent.initialRampDone = true;
         } else {
-            const maxDelta = this.cruiseSpeed / (15 * 60);
+            // Seek target at player-comparable accel. The old cruise/(15*60)
+            // maxDelta (~0.005/frame) lost to slope gravity and pinned vx at 0.2.
+            const maxDelta = Math.max(this.train.acceleration, OPPONENT_SPEED_RESPONSIVENESS);
             this.opponent.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
         }
         this.applyTrackGravity(this.opponent);
