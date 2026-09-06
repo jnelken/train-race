@@ -70,29 +70,17 @@ function cruiseSpeedForLength(finishLineWorldX) {
     return BASE_CRUISE_SPEED * (1 + 0.5 * (lengthRatio - 1));
 }
 
-// Smooth cosine tent spanning [0, finishX]: always inclined except at the crest.
+// Linear tent spanning [0, finishX]: constant grade on each side (no flat approaches).
 function mountainTentElevation(worldX, center, finishX, peakBase) {
-    if (worldX <= center) {
-        if (center <= 0) return peakBase;
-        const t = Math.max(0, Math.min(1, worldX / center));
-        return peakBase * (0.5 - 0.5 * Math.cos(Math.PI * t));
-    }
-    const span = finishX - center;
-    if (span <= 0) return peakBase;
-    const t = Math.max(0, Math.min(1, (worldX - center) / span));
-    return peakBase * (0.5 + 0.5 * Math.cos(Math.PI * t));
+    const halfSpan = Math.max(center, finishX - center, 1);
+    const t = 1 - Math.abs(worldX - center) / halfSpan;
+    return peakBase * Math.max(0, t);
 }
 
 function mountainTentSlope(worldX, center, finishX, peakBase) {
-    if (worldX <= center) {
-        if (center <= 0) return 0;
-        const t = Math.max(0, Math.min(1, worldX / center));
-        return peakBase * (Math.PI / (2 * center)) * Math.sin(Math.PI * t);
-    }
-    const span = finishX - center;
-    if (span <= 0) return 0;
-    const t = Math.max(0, Math.min(1, (worldX - center) / span));
-    return -peakBase * (Math.PI / (2 * span)) * Math.sin(Math.PI * t);
+    const halfSpan = Math.max(center, finishX - center, 1);
+    if (Math.abs(worldX - center) >= halfSpan) return 0;
+    return worldX < center ? peakBase / halfSpan : -peakBase / halfSpan;
 }
 
 function makeMountainProfile(finishLineWorldX) {
