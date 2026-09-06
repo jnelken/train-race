@@ -52,7 +52,7 @@ const OPPONENT_SPEED_STEP    = 0.05;
 const OPPONENT_SPEED_VARIANCE = 0.05;
 const OPPONENT_TARGET_WIN_RATE = 0.75;
 const OPPONENT_BALANCE_WINDOW  = 4;
-const OPPONENT_MAX_SPEED_MULT  = 1.20; // never average faster than +20% over cruise
+const OPPONENT_MAX_SPEED_MULT  = 1.10; // never average faster than +10% over cruise
 const PLAYER_BOOST_PER_TOKEN   = 0.05; // each press: +5% for 1s, uncapped stack from taps only
 
 function pickTheme() {
@@ -696,7 +696,7 @@ class TrainGame {
 
     configureOpponentSpeed() {
         const variance = 1 + (Math.random() * 2 - 1) * OPPONENT_SPEED_VARIANCE;
-        // Difficulty can keep adapting, but race speed never exceeds +20% cruise.
+        // Difficulty can keep adapting, but race speed never exceeds +10% cruise.
         const raceMultiplier = Math.min(
             OPPONENT_MAX_SPEED_MULT,
             Math.max(0.25, this.opponentDifficulty.baseMultiplier * variance)
@@ -1161,7 +1161,7 @@ class TrainGame {
         const oppSpeedCap = this.cruiseSpeed * OPPONENT_MAX_SPEED_MULT;
 
         // Opponent boost: activate when behind, spend budget (tracked in world-units).
-        // Instantaneous speed is still hard-capped at +20% cruise so average never exceeds that.
+        // Instantaneous speed is still hard-capped at +10% cruise so average never exceeds that.
         const gap = this.opponent.worldX - this.train.worldX;
         if (!this.opponent.boosting && this.opponent.boostBudget > 0 && gap < -150) {
             this.opponent.boosting = true;
@@ -1178,7 +1178,7 @@ class TrainGame {
             slantSpeed * (this.opponent.boosting ? OPPONENT_MAX_SPEED_MULT : 1.0)
         );
 
-        // Flat-ground AI target (opponent cruise/boost capped at +20%).
+        // Flat-ground AI target (opponent cruise/boost capped at +10%).
         // Slope gravity is applied afterward with the same additive rule as the player.
         const tooFarAhead  =  this.canvas.width * 0.55;
         const tooFarBehind = -this.canvas.width * 0.55;
