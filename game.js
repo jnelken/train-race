@@ -15,14 +15,14 @@ const PILLAR_GAP   = 120;  // bridge support spacing
 const THEMES       = ['sahara', 'city', 'mountain', 'candy'];
 
 // ─── Mountain theme constants ──────────────────────────────────────────────
-// Visual curve: one big mid-race hill. Peak must stay small enough that both
-// trains remain on a 400px canvas when the camera follows the player — the old
-// 2285px peak shoved a trailing NPC off the bottom so it looked "stopped"
-// just before the climb.
-const MOUNTAIN_PEAK_HEIGHT = 220;               // default / mid visual elevation (px)
-const MOUNTAIN_PEAK_MIN    = 160;               // per-race random peak floor
-const MOUNTAIN_PEAK_MAX    = 240;               // per-race random peak ceiling (canvas-safe)
-const MOUNTAIN_SIGMA       = 500;               // visual bell curve width
+// Full-course pass (tent) + sharp crest. Total peak must stay canvas-safe when
+// the camera follows the player — a huge peak shoved a trailing NPC off-screen.
+const MOUNTAIN_PEAK_HEIGHT = 220;               // default total peak (base + crest)
+const MOUNTAIN_BASE_MIN    = 60;                // full-course tent amp floor
+const MOUNTAIN_BASE_MAX    = 80;                // full-course tent amp ceiling
+const MOUNTAIN_CREST_MIN   = 180;               // sharp crest (~5× steeper than old σ=500 @220)
+const MOUNTAIN_CREST_MAX   = 220;               // crest ceiling (total ~240–300)
+const MOUNTAIN_SIGMA       = 100;               // crest width (was 500 → ~5× steeper)
 
 // Physics curve: must stay aligned with the visual hill. A much wider physics
 // sigma (formerly 2200 vs visual 500) drained speed on minimap-flat track;
@@ -70,19 +70,70 @@ function cruiseSpeedForLength(finishLineWorldX) {
     return BASE_CRUISE_SPEED * (1 + 0.5 * (lengthRatio - 1));
 }
 
-function getMountainElevation(worldX, center, peakHeight = MOUNTAIN_PEAK_HEIGHT) {
-    const dx = worldX - center;
-    return peakHeight * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
+// Smooth cosine tent spanning [0, finishX]: always inclined except at the crest.
+function mountainTentElevation(worldX, center, finishX, peakBase) {
+    if (worldX <= center) {
+        if (center <= 0) return peakBase;
+        const t = Math.max(0, Math.min(1, worldX / center));
+        return peakBase * (0.5 - 0.5 * Math.cos(Math.PI * t));
+    }
+    const span = finishX - center;
+    if (span <= 0) return peakBase;
+    const t = Math.max(0, Math.min(1, (worldX - center) / span));
+    return peakBase * (0.5 + 0.5 * Math.cos(Math.PI * t));
 }
 
-function getMountainSlope(worldX, center, peakHeight = MOUNTAIN_PEAK_HEIGHT) {
-    const dx = worldX - center;
-    return -getMountainElevation(worldX, center, peakHeight) * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
+function mountainTentSlope(worldX, center, finishX, peakBase) {
+    if (worldX <= center) {
+        if (center <= 0) return 0;
+        const t = Math.max(0, Math.min(1, worldX / center));
+        return peakBase * (Math.PI / (2 * center)) * Math.sin(Math.PI * t);
+    }
+    const span = finishX - center;
+    if (span <= 0) return 0;
+    const t = Math.max(0, Math.min(1, (worldX - center) / span));
+    return -peakBase * (Math.PI / (2 * span)) * Math.sin(Math.PI * t);
 }
 
-function getMountainPhysicsSlope(worldX, center) {
-    const dx = worldX - center;
-    const elev = MOUNTAIN_PHYSICS_PEAK * Math.exp(-(dx * dx) / (2 * MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA));
+function makeMountainProfile(finishLineWorldX) {
+    const center = finishLineWorldX * (0.25 + Math.random() * 0.5);
+    const peakBase = MOUNTAIN_BASE_MIN
+        + Math.random() * (MOUNTAIN_BASE_MAX - MOUNTAIN_BASE_MIN);
+    const crestHeight = MOUNTAIN_CREST_MIN
+        + Math.random() * (MOUNTAIN_CREST_MAX - MOUNTAIN_CREST_MIN);
+    return {
+        center,
+        finishX: finishLineWorldX,
+        peakBase,
+        crestHeight,
+        totalPeak: peakBase + crestHeight,
+    };
+}
+
+function getMountainElevation(worldX, profile) {
+    if (!profile) return 0;
+    const dx = worldX - profile.center;
+    const crest = profile.crestHeight
+        * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
+    return mountainTentElevation(worldX, profile.center, profile.finishX, profile.peakBase)
+        + crest;
+}
+
+function getMountainSlope(worldX, profile) {
+    if (!profile) return 0;
+    const dx = worldX - profile.center;
+    const crest = profile.crestHeight
+        * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
+    const crestSlope = -crest * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
+    return mountainTentSlope(worldX, profile.center, profile.finishX, profile.peakBase)
+        + crestSlope;
+}
+
+function getMountainPhysicsSlope(worldX, profile) {
+    if (!profile) return 0;
+    const dx = worldX - profile.center;
+    const elev = MOUNTAIN_PHYSICS_PEAK
+        * Math.exp(-(dx * dx) / (2 * MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA));
     return -elev * dx / (MOUNTAIN_PHYSICS_SIGMA * MOUNTAIN_PHYSICS_SIGMA);
 }
 
@@ -421,26 +472,31 @@ class TrainGame {
         return worldX - this.cameraX + this.canvas.width / 2 - TRAIN_WIDTH / 2;
     }
 
-    // Per-race hill params: candy sine, mountain peak place/height, sahara bumps.
+    // Per-race hill params: candy sine, mountain pass, sahara bumps.
     generateRaceTerrain() {
         this.candyWave = null;
         this.saharaHills = [];
+        this.mountainProfile = null;
         this.mountainCenter = this.finishLineWorldX / 2;
         this.mountainPeakHeight = MOUNTAIN_PEAK_HEIGHT;
 
         if (this.theme === 'candy') {
             this.candyWave = makeCandyWaveProfile();
         } else if (this.theme === 'mountain') {
-            this.mountainCenter = this.finishLineWorldX * (0.25 + Math.random() * 0.5);
-            this.mountainPeakHeight = MOUNTAIN_PEAK_MIN
-                + Math.random() * (MOUNTAIN_PEAK_MAX - MOUNTAIN_PEAK_MIN);
+            this.mountainProfile = makeMountainProfile(this.finishLineWorldX);
+            this.mountainCenter = this.mountainProfile.center;
+            this.mountainPeakHeight = this.mountainProfile.totalPeak;
         } else if (this.theme === 'sahara') {
             this.saharaHills = makeSaharaHills(this.finishLineWorldX);
         }
     }
 
     visualAmpMax() {
-        if (this.theme === 'mountain') return this.mountainPeakHeight;
+        if (this.theme === 'mountain') {
+            return this.mountainProfile
+                ? this.mountainProfile.totalPeak
+                : this.mountainPeakHeight;
+        }
         if (this.theme === 'candy') {
             const w = this.candyWave;
             return w ? w.amp * (1 + w.harmonic) : CANDY_WAVE_AMP_DEFAULT;
@@ -452,18 +508,14 @@ class TrainGame {
     }
 
     getElevation(worldX) {
-        if (this.theme === 'mountain') {
-            return getMountainElevation(worldX, this.mountainCenter, this.mountainPeakHeight);
-        }
+        if (this.theme === 'mountain') return getMountainElevation(worldX, this.mountainProfile);
         if (this.theme === 'candy') return getCandyElevation(worldX, this.candyWave);
         if (this.theme === 'sahara') return getBumpElevation(worldX, this.saharaHills);
         return 0;
     }
 
     getSlope(worldX) {
-        if (this.theme === 'mountain') {
-            return getMountainSlope(worldX, this.mountainCenter, this.mountainPeakHeight);
-        }
+        if (this.theme === 'mountain') return getMountainSlope(worldX, this.mountainProfile);
         if (this.theme === 'candy') return getCandySlope(worldX, this.candyWave);
         if (this.theme === 'sahara') return getBumpSlope(worldX, this.saharaHills);
         return 0;
@@ -471,7 +523,7 @@ class TrainGame {
 
     getPhysicsSlope(worldX) {
         if (!TRACK_SLOPE_PHYSICS) return 0;
-        if (this.theme === 'mountain') return getMountainPhysicsSlope(worldX, this.mountainCenter);
+        if (this.theme === 'mountain') return getMountainPhysicsSlope(worldX, this.mountainProfile);
         if (this.theme === 'candy') return getCandyPhysicsSlope(worldX, this.candyWave);
         if (this.theme === 'sahara') return getBumpSlope(worldX, this.saharaHills) * 0.15;
         return 0;
@@ -1618,8 +1670,8 @@ class TrainGame {
             else          ctx.lineTo(sx, gy);
         }
         // Extend bottom well past screen (camera shifts the viewport)
-        ctx.lineTo(W, H + this.mountainPeakHeight);
-        ctx.lineTo(0, H + this.mountainPeakHeight);
+        ctx.lineTo(W, H + this.visualAmpMax());
+        ctx.lineTo(0, H + this.visualAmpMax());
         ctx.closePath();
         ctx.fill();
     }
