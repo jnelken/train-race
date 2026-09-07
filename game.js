@@ -22,7 +22,7 @@ const MOUNTAIN_BASE_MIN    = 60;                // full-course tent amp floor
 const MOUNTAIN_BASE_MAX    = 80;                // full-course tent amp ceiling
 const MOUNTAIN_CREST_MIN   = 180;               // sharp crest (~5× steeper than old σ=500 @220)
 const MOUNTAIN_CREST_MAX   = 220;               // crest ceiling (total ~240–300)
-const MOUNTAIN_SIGMA       = 100;               // crest width (was 500 → ~5× steeper)
+const MOUNTAIN_SIGMA       = 180;               // readable crest width; local slope ~35–40°
 
 // Physics curve: must stay aligned with the visual hill. A much wider physics
 // sigma (formerly 2200 vs visual 500) drained speed on minimap-flat track;
@@ -133,34 +133,52 @@ const CANDY_WAVE_AMP_DEFAULT = 72;  // fallback amp for padding / minimap
 const CANDY_PHYSICS_AMP = 5;
 
 function makeCandyWaveProfile() {
+    const primaryWavelength = 700 + Math.random() * 400;
     return {
-        wavelength: 700 + Math.random() * 400,       // 700–1100
-        amp:        50 + Math.random() * 30,         // 50–80
-        phase:      Math.random() * Math.PI * 2,
-        harmonic:   0.15 + Math.random() * 0.2,      // 2nd harmonic strength
+        // Independent smooth layers preserve the rolling frequency while
+        // preventing the same hill shape from repeating across the course.
+        waves: [
+            {
+                wavelength: primaryWavelength,
+                amp: 50 + Math.random() * 30,
+                phase: Math.random() * Math.PI * 2,
+            },
+            {
+                wavelength: 1400 + Math.random() * 1000,
+                amp: 14 + Math.random() * 14,
+                phase: Math.random() * Math.PI * 2,
+            },
+            {
+                wavelength: 350 + Math.random() * 300,
+                amp: 7 + Math.random() * 11,
+                phase: Math.random() * Math.PI * 2,
+            },
+        ],
     };
 }
 
 function getCandyElevation(worldX, wave) {
     if (!wave) return 0;
-    const k = (2 * Math.PI) / wave.wavelength;
-    return wave.amp * Math.sin(k * worldX + wave.phase)
-        + wave.amp * wave.harmonic * Math.sin(2 * k * worldX + wave.phase * 2);
+    return wave.waves.reduce((elevation, component) => {
+        const k = (2 * Math.PI) / component.wavelength;
+        return elevation + component.amp * Math.sin(k * worldX + component.phase);
+    }, 0);
 }
 
 function getCandySlope(worldX, wave) {
     if (!wave) return 0;
-    const k = (2 * Math.PI) / wave.wavelength;
-    return wave.amp * k * Math.cos(k * worldX + wave.phase)
-        + wave.amp * wave.harmonic * (2 * k) * Math.cos(2 * k * worldX + wave.phase * 2);
+    return wave.waves.reduce((slope, component) => {
+        const k = (2 * Math.PI) / component.wavelength;
+        return slope + component.amp * k * Math.cos(k * worldX + component.phase);
+    }, 0);
 }
 
 function getCandyPhysicsSlope(worldX, wave) {
     if (!wave) return 0;
-    const k = (2 * Math.PI) / wave.wavelength;
     // Scale visual slope down to the small physics amp band.
     const visual = getCandySlope(worldX, wave);
-    return visual * (CANDY_PHYSICS_AMP / Math.max(wave.amp, 1));
+    const primaryAmp = wave.waves[0]?.amp ?? CANDY_WAVE_AMP_DEFAULT;
+    return visual * (CANDY_PHYSICS_AMP / Math.max(primaryAmp, 1));
 }
 
 // ─── Sahara / valley: a few tiny gaussian bumps per race ───────────────────
@@ -487,7 +505,9 @@ class TrainGame {
         }
         if (this.theme === 'candy') {
             const w = this.candyWave;
-            return w ? w.amp * (1 + w.harmonic) : CANDY_WAVE_AMP_DEFAULT;
+            return w
+                ? w.waves.reduce((total, component) => total + component.amp, 0)
+                : CANDY_WAVE_AMP_DEFAULT;
         }
         if (this.theme === 'sahara' && this.saharaHills.length) {
             return Math.max(...this.saharaHills.map(h => h.amp));
