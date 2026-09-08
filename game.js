@@ -54,6 +54,11 @@ const OPPONENT_TARGET_WIN_RATE = 0.75;
 const OPPONENT_BALANCE_WINDOW  = 4;
 const OPPONENT_MAX_SPEED_MULT  = 1.10; // never average faster than +10% over cruise
 const PLAYER_BOOST_PER_TOKEN   = 0.05; // each press: +5% for 1s, uncapped stack from taps only
+// Hard ceiling on the OPPONENT's instantaneous speed. Its cruise, slant, boost
+// and downhill slope gravity are all clamped to this — the NPC may never exceed
+// it, whatever cruiseSpeed or the difficulty controller ask for. Deliberately
+// does NOT apply to the player, whose boost stack stays uncapped.
+const OPPONENT_SPEED_CEILING   = 4;
 
 function pickTheme() {
     return THEMES[Math.floor(Math.random() * THEMES.length)];
@@ -549,12 +554,14 @@ class TrainGame {
     }
 
     // Shared slope gravity for player and opponent (additive, same curve).
-    applyTrackGravity(body, minVx = 0.2) {
+    // maxVx is opt-in: only the opponent passes a ceiling, since downhill gravity
+    // adds speed with no bound of its own when TRACK_SLOPE_PHYSICS is enabled.
+    applyTrackGravity(body, minVx = 0.2, maxVx = Infinity) {
         if (TRACK_SLOPE_PHYSICS) {
             const slope = this.getPhysicsSlope(body.worldX + TRAIN_WIDTH / 2);
             body.vx -= slope * MOUNTAIN_GRAVITY;
         }
-        body.vx = Math.max(body.vx, minVx);
+        body.vx = Math.min(Math.max(body.vx, minVx), maxVx);
     }
 
     generateInitialScenery() {
@@ -1099,7 +1106,7 @@ class TrainGame {
             this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
             if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
             this.opponent.vx    *= this.train.friction;
-            this.applyTrackGravity(this.opponent, 0);
+            this.applyTrackGravity(this.opponent, 0, OPPONENT_SPEED_CEILING);
             this.opponent.worldX += this.opponent.vx;
             this.updateTrainVertical(this.opponent);
             this.opponent.y      = TRACK_BACK - TRAIN_HEIGHT - this.opponent.elev;
@@ -1178,10 +1185,11 @@ class TrainGame {
         // Linear slant: fast-start fades to slow-finish (or reverse), averaging topSpeed
         const progress    = Math.min(Math.max(this.opponent.worldX / this.finishLineWorldX, 0), 1);
         const slantSpeed  = this.opponent.topSpeed + this.opponent.slant * (1 - 2 * progress);
-        const oppSpeedCap = this.cruiseSpeed * OPPONENT_MAX_SPEED_MULT;
+        const oppSpeedCap = Math.min(this.cruiseSpeed * OPPONENT_MAX_SPEED_MULT, OPPONENT_SPEED_CEILING);
 
         // Opponent boost: activate when behind, spend budget (tracked in world-units).
-        // Instantaneous speed is still hard-capped at +10% cruise so average never exceeds that.
+        // Instantaneous speed is still hard-capped at oppSpeedCap (the lower of
+        // +10% cruise and OPPONENT_SPEED_CEILING) so the average never exceeds it.
         const gap = this.opponent.worldX - this.train.worldX;
         if (!this.opponent.boosting && this.opponent.boostBudget > 0 && gap < -150) {
             this.opponent.boosting = true;
@@ -1218,7 +1226,7 @@ class TrainGame {
             const maxDelta = Math.max(this.train.acceleration, OPPONENT_SPEED_RESPONSIVENESS);
             this.opponent.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
         }
-        this.applyTrackGravity(this.opponent);
+        this.applyTrackGravity(this.opponent, 0.2, OPPONENT_SPEED_CEILING);
 
         this.opponent.worldX    += this.opponent.vx;
         this.updateTrainVertical(this.opponent);
