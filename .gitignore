@@ -3,6 +3,5 @@
 .vercel
 .playwright-mcp/
 
-# wrapup-repos automation's own scratch note - untracked-forever was making
-# this repo look "recently touched" indefinitely to the recency heuristic.
-NEXT-STEPS.md
+# close-out / wrapup-repos running handoff note - local continuity state.
+.claude/IN_PROGRESS.md
