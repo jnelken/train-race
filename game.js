@@ -494,6 +494,15 @@ class TrainGame {
                 .catch(() => {});
         });
 
+        // ── Horn (H key): decoded up front so the honk is instant ──────────────
+        this._hornBuf = null;
+        this._horn    = null;   // { src, gain } while a honk is sounding
+        fetch('assets/sounds/train_horn.mp3')
+            .then(r => r.arrayBuffer())
+            .then(ab => this.audioCtx.decodeAudioData(ab))
+            .then(buf => { this._hornBuf = buf; })
+            .catch(() => {});
+
         // ── Win / arrival sounds (HTML Audio) ─────────────────────────────
         this.winSound   = new Audio('assets/sounds/this_is_fairy_land.m4a');
         this.standClear = new Audio('assets/sounds/stand_clear_of_closing_doors_please.m4a');
@@ -900,6 +909,8 @@ class TrainGame {
         this.crowdSpawned = false;
         this.generateInitialScenery();
 
+        this.honkStop(0.05);
+
         // Stop all engine sounds and reset Web Audio state machine
         this._stopEngSrc(this._engSrc);
         this._stopEngSrc(this._engPending);
@@ -960,6 +971,13 @@ class TrainGame {
                 return;
             }
 
+            // H = honk (hold to keep it going). Works while paused and never
+            // starts the race.
+            if (e.key === 'h' || e.key === 'H') {
+                this.honkStart();
+                return;
+            }
+
             if (e.key === 'p' || e.key === 'P') {
                 this.togglePause();
                 return;
@@ -984,7 +1002,10 @@ class TrainGame {
                 this._boostFlashTimer = setTimeout(() => boostBtn.classList.remove('active'), 120);
             }
         });
-        window.addEventListener('keyup', (e) => { this.keys[e.key] = false; });
+        window.addEventListener('keyup', (e) => {
+            this.keys[e.key] = false;
+            if (e.key === 'h' || e.key === 'H') this.honkStop();
+        });
 
         // ── Touch / iPad support: tap canvas = boost ──────────────────────────
         this.canvas.addEventListener('touchstart', (e) => {
@@ -1337,6 +1358,40 @@ class TrainGame {
 
         // ── Sound: volume tracks speed; restart from silence when re-accelerating after stop ──
         this.updateSound();
+    }
+
+    // ── Horn ───────────────────────────────────────────────────────────────
+    // The clip is the 2.5 s–7 s slice of the source recording. Pressing H restarts
+    // it; releasing H fades it out quickly, so a tap is a short toot and a hold
+    // rides the whole blast.
+    honkStart() {
+        if (!this._hornBuf) return;
+        if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+        this.honkStop(0.03);
+        const src  = this.audioCtx.createBufferSource();
+        const gain = this.audioCtx.createGain();
+        src.buffer = this._hornBuf;
+        gain.gain.value = 0.9;
+        src.connect(gain);
+        gain.connect(this.audioCtx.destination);
+        src.start();
+        const horn = { src, gain };
+        this._horn = horn;
+        src.onended = () => {
+            if (this._horn === horn) this._horn = null;
+            gain.disconnect();
+        };
+    }
+
+    honkStop(fade = 0.12) {
+        const horn = this._horn;
+        if (!horn) return;
+        this._horn = null;
+        const t = this.audioCtx.currentTime;
+        horn.gain.gain.cancelScheduledValues(t);
+        horn.gain.gain.setValueAtTime(horn.gain.gain.value, t);
+        horn.gain.gain.linearRampToValueAtTime(0, t + fade);
+        try { horn.src.stop(t + fade + 0.02); } catch (_) {}
     }
 
     // ── Web Audio helpers ──────────────────────────────────────────────────
