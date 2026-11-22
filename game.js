@@ -15,14 +15,16 @@ const PILLAR_GAP   = 120;  // bridge support spacing
 const THEMES       = ['sahara', 'city', 'mountain', 'candy'];
 
 // ─── Mountain theme constants ──────────────────────────────────────────────
-// Full-course pass (tent) + sharp crest. Total peak must stay canvas-safe when
-// the camera follows the player — a huge peak shoved a trailing NPC off-screen.
-const MOUNTAIN_PEAK_HEIGHT = 220;               // default total peak (base + crest)
-const MOUNTAIN_BASE_MIN    = 60;                // full-course tent amp floor
-const MOUNTAIN_BASE_MAX    = 80;                // full-course tent amp ceiling
-const MOUNTAIN_CREST_MIN   = 180;               // sharp crest (~5× steeper than old σ=500 @220)
-const MOUNTAIN_CREST_MAX   = 220;               // crest ceiling (total ~240–300)
-const MOUNTAIN_SIGMA       = 180;               // readable crest width; local slope ~35–40°
+// One giant hill spanning the whole course: elevation 0 at the start, a climb
+// across the first half, a rounded summit at the exact midpoint, then a descent
+// that returns to 0 at the finish. The grade stays gentle (~0.1–0.17) because
+// the hill is spread over 20–30k units, so a trailing NPC (≤ ~390 units behind)
+// is only ~65 px lower than the player and stays on screen.
+const MOUNTAIN_PEAK_HEIGHT = 1600;              // default summit height (px)
+const MOUNTAIN_PEAK_MIN    = 1400;              // summit height range per race
+const MOUNTAIN_PEAK_MAX    = 1800;
+const MOUNTAIN_APEX_ROUND  = 500;               // radius that rounds the summit (no kink)
+const MOUNTAIN_SIGMA       = 180;               // physics-slope width (dead path while TRACK_SLOPE_PHYSICS is off)
 
 // Physics curve: must stay aligned with the visual hill. A much wider physics
 // sigma (formerly 2200 vs visual 500) drained speed on minimap-flat track;
@@ -58,9 +60,37 @@ const PLAYER_BOOST_PER_TOKEN   = 0.05; // each press: +5% for 1s, uncapped stack
 // and downhill slope gravity are all clamped to this — the NPC may never exceed
 // it, whatever cruiseSpeed or the difficulty controller ask for. Deliberately
 // does NOT apply to the player, whose boost stack stays uncapped.
-const OPPONENT_SPEED_CEILING   = 4;
+const OPPONENT_SPEED_CEILING   = 4.5;
+// The opponent drives at one constant speed for the whole race: no slant, no boost
+// budget and no difficulty scaling. Hills still modulate its EFFECTIVE speed (same
+// slopeSpeedMult as the player), and it only eases off if it gets far ahead.
+const OPPONENT_CONSTANT_SPEED  = 4.5;
 
+// ─── Hills modulate effective speed ─────────────────────────────────────────
+// effective speed = vx × clamp(1 − gain × slope): climbing slows, descending
+// speeds up. It scales DISPLACEMENT, never vx, so the opponent AI (which seeks a
+// target vx) can't fight it and both trains obey the exact same curve.
+const SLOPE_SPEED_MIN  = 0.55;
+const SLOPE_SPEED_MAX  = 1.6;
+const SLOPE_SPEED_LERP = 0.15;   // per-frame smoothing so crests don't snap the speed
+const SLOPE_SPEED_GAIN_DEFAULT = 1.2;
+const SLOPE_SPEED_GAIN = { mountain: 2.5, candy: 0.8, sahara: 1.5 };
+
+function clamp01(v) { return Math.min(1, Math.max(0, v)); }
+
+// Blend two #rrggbb colors; t = 0 → a, t = 1 → b.
+function mixHex(a, b, t) {
+    const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+    const ch = (shift) => Math.round(((pa >> shift) & 255) * (1 - t) + ((pb >> shift) & 255) * t);
+    return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
+
+// `?theme=<id>` pins the level (handy for testing a specific one).
 function pickTheme() {
+    try {
+        const forced = new URLSearchParams(location.search).get('theme');
+        if (forced && THEMES.includes(forced)) return forced;
+    } catch (_) {}
     return THEMES[Math.floor(Math.random() * THEMES.length)];
 }
 
@@ -75,51 +105,47 @@ function cruiseSpeedForLength(finishLineWorldX) {
     return BASE_CRUISE_SPEED * (1 + 0.5 * (lengthRatio - 1));
 }
 
-// Linear tent spanning [0, finishX]: constant grade on each side (no flat approaches).
+// Tent spanning [0, finishX] with a rounded apex: a constant grade on each side
+// (no flat approaches) that eases over the summit instead of snapping. With
+// d(dx) = sqrt(dx² + R²) - R the elevation is peak·(dmax - d)/dmax, which is
+// exactly 0 at the start and the finish, and the slope is continuous at the top.
 function mountainTentElevation(worldX, center, finishX, peakBase) {
     const halfSpan = Math.max(center, finishX - center, 1);
-    const t = 1 - Math.abs(worldX - center) / halfSpan;
-    return peakBase * Math.max(0, t);
+    const R = MOUNTAIN_APEX_ROUND;
+    const dmax = Math.sqrt(halfSpan * halfSpan + R * R) - R;
+    const dx = worldX - center;
+    const d = Math.sqrt(dx * dx + R * R) - R;
+    return peakBase * Math.max(0, (dmax - d) / dmax);
 }
 
 function mountainTentSlope(worldX, center, finishX, peakBase) {
     const halfSpan = Math.max(center, finishX - center, 1);
-    if (Math.abs(worldX - center) >= halfSpan) return 0;
-    return worldX < center ? peakBase / halfSpan : -peakBase / halfSpan;
+    const dx = worldX - center;
+    if (Math.abs(dx) >= halfSpan) return 0;
+    const R = MOUNTAIN_APEX_ROUND;
+    const dmax = Math.sqrt(halfSpan * halfSpan + R * R) - R;
+    return -peakBase / dmax * dx / Math.sqrt(dx * dx + R * R);
 }
 
 function makeMountainProfile(finishLineWorldX) {
-    const center = finishLineWorldX * (0.25 + Math.random() * 0.5);
-    const peakBase = MOUNTAIN_BASE_MIN
-        + Math.random() * (MOUNTAIN_BASE_MAX - MOUNTAIN_BASE_MIN);
-    const crestHeight = MOUNTAIN_CREST_MIN
-        + Math.random() * (MOUNTAIN_CREST_MAX - MOUNTAIN_CREST_MIN);
+    const peakBase = MOUNTAIN_PEAK_MIN
+        + Math.random() * (MOUNTAIN_PEAK_MAX - MOUNTAIN_PEAK_MIN);
     return {
-        center,
+        center: finishLineWorldX / 2,   // symmetric: finish elevation == start elevation (0)
         finishX: finishLineWorldX,
         peakBase,
-        crestHeight,
-        totalPeak: peakBase + crestHeight,
+        totalPeak: peakBase,
     };
 }
 
 function getMountainElevation(worldX, profile) {
     if (!profile) return 0;
-    const dx = worldX - profile.center;
-    const crest = profile.crestHeight
-        * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
-    return mountainTentElevation(worldX, profile.center, profile.finishX, profile.peakBase)
-        + crest;
+    return mountainTentElevation(worldX, profile.center, profile.finishX, profile.peakBase);
 }
 
 function getMountainSlope(worldX, profile) {
     if (!profile) return 0;
-    const dx = worldX - profile.center;
-    const crest = profile.crestHeight
-        * Math.exp(-(dx * dx) / (2 * MOUNTAIN_SIGMA * MOUNTAIN_SIGMA));
-    const crestSlope = -crest * dx / (MOUNTAIN_SIGMA * MOUNTAIN_SIGMA);
-    return mountainTentSlope(worldX, profile.center, profile.finishX, profile.peakBase)
-        + crestSlope;
+    return mountainTentSlope(worldX, profile.center, profile.finishX, profile.peakBase);
 }
 
 function getMountainPhysicsSlope(worldX, profile) {
@@ -444,6 +470,7 @@ class TrainGame {
         this._engSrc     = null;   // currently playing AudioBufferSourceNode
         this._engPending = null;   // pre-scheduled loop node (during 'starting' state)
         this._soundState = 'idle'; // 'idle' | 'starting' | 'running' | 'stopping'
+        this._engRate    = 1;      // last loop playbackRate (varispeed with train speed)
 
         // Fetch + decode all three engine clips up front so there is zero
         // buffering delay when the race begins (even on the very first load).
@@ -562,6 +589,20 @@ class TrainGame {
             body.vx -= slope * MOUNTAIN_GRAVITY;
         }
         body.vx = Math.min(Math.max(body.vx, minVx), maxVx);
+    }
+
+    // Shared by player and opponent. Positive slope = climbing (see the get*Slope
+    // helpers: d(elevation)/dx, elevation up-positive).
+    slopeSpeedMult(body) {
+        let target = 1;
+        if (this.hasElevatedTrack()) {
+            const gain  = SLOPE_SPEED_GAIN[this.theme] ?? SLOPE_SPEED_GAIN_DEFAULT;
+            const slope = this.getSlope(body.worldX + TRAIN_WIDTH / 2);
+            target = Math.min(SLOPE_SPEED_MAX, Math.max(SLOPE_SPEED_MIN, 1 - gain * slope));
+        }
+        const prev = body.slopeMult ?? 1;
+        body.slopeMult = prev + (target - prev) * SLOPE_SPEED_LERP;
+        return body.slopeMult;
     }
 
     generateInitialScenery() {
@@ -745,6 +786,8 @@ class TrainGame {
 
         this.train.worldX = 0;
         this.train.vx = 0;
+        this.train.slopeMult = 1;
+        this.opponent.slopeMult = 1;
         this.train.elev = 0;
         this.train.vy = 0;
         this.train.airborne = false;
@@ -794,6 +837,7 @@ class TrainGame {
         this._engPending = null;
         this._engGain.gain.value = 0;
         this._soundState = 'idle';
+        this._engRate    = 1;
 
         // Cancel pending timers and remove ended-event listeners from win sequence
         this._winTimers.forEach(id => clearTimeout(id));
@@ -1146,13 +1190,14 @@ class TrainGame {
         if (this.raceStarted) {
             this.applyTrackGravity(this.train);
         }
-        this.train.worldX += this.train.vx;
+        const playerMult = this.slopeSpeedMult(this.train);
+        this.train.worldX += this.train.vx * playerMult;
         this.updateTrainVertical(this.train);
         this.cameraX += (this.train.worldX - this.cameraX) * CAMERA_LERP;
         this.cameraY += (this.train.elev - this.cameraY) * CAMERA_LERP;
         this.train.y = TRACK_FRONT - TRAIN_HEIGHT - this.train.elev;
 
-        if (this.train.vx > 0) this.gameState.distance += this.train.vx;
+        if (this.train.vx > 0) this.gameState.distance += this.train.vx * playerMult;
 
         this.wheelFrame += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
         if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
@@ -1182,32 +1227,14 @@ class TrainGame {
         // Opponent AI — stays still until player moves
         if (!this.raceStarted) return;
 
-        // Linear slant: fast-start fades to slow-finish (or reverse), averaging topSpeed
-        const progress    = Math.min(Math.max(this.opponent.worldX / this.finishLineWorldX, 0), 1);
-        const slantSpeed  = this.opponent.topSpeed + this.opponent.slant * (1 - 2 * progress);
-        const oppSpeedCap = Math.min(this.cruiseSpeed * OPPONENT_MAX_SPEED_MULT, OPPONENT_SPEED_CEILING);
-
-        // Opponent boost: activate when behind, spend budget (tracked in world-units).
-        // Instantaneous speed is still hard-capped at oppSpeedCap (the lower of
-        // +10% cruise and OPPONENT_SPEED_CEILING) so the average never exceeds it.
+        // Constant-speed opponent (see OPPONENT_CONSTANT_SPEED). Slant, boost budget and
+        // adaptive difficulty no longer change its speed; boosting stays off so the
+        // flame never shows without an effect.
         const gap = this.opponent.worldX - this.train.worldX;
-        if (!this.opponent.boosting && this.opponent.boostBudget > 0 && gap < -150) {
-            this.opponent.boosting = true;
-        }
-        if (this.opponent.boosting) {
-            this.opponent.boostBudget -= this.opponent.vx;
-            if (this.opponent.boostBudget <= 0 || gap > 50) {
-                this.opponent.boosting = false;
-                this.opponent.boostBudget = Math.max(0, this.opponent.boostBudget);
-            }
-        }
-        const oppEffectiveTop = Math.min(
-            oppSpeedCap,
-            slantSpeed * (this.opponent.boosting ? OPPONENT_MAX_SPEED_MULT : 1.0)
-        );
+        this.opponent.boosting = false;
+        const oppEffectiveTop = Math.min(OPPONENT_CONSTANT_SPEED, OPPONENT_SPEED_CEILING);
 
-        // Flat-ground AI target (opponent cruise/boost capped at +10%).
-        // Slope gravity is applied afterward with the same additive rule as the player.
+        // Flat-ground AI target: the constant speed, or 40% of it when far ahead.
         const tooFarAhead  =  this.canvas.width * 0.55;
         const tooFarBehind = -this.canvas.width * 0.55;
 
@@ -1228,7 +1255,7 @@ class TrainGame {
         }
         this.applyTrackGravity(this.opponent, 0.2, OPPONENT_SPEED_CEILING);
 
-        this.opponent.worldX    += this.opponent.vx;
+        this.opponent.worldX    += this.opponent.vx * this.slopeSpeedMult(this.opponent);
         this.updateTrainVertical(this.opponent);
         this.opponent.y = TRACK_BACK - TRAIN_HEIGHT - this.opponent.elev;
         this.opponent.wheelFrame += this.opponent.vx * this.wheelAnimationSpeed;
@@ -1262,9 +1289,27 @@ class TrainGame {
         src.disconnect();
     }
 
+    // Varispeed for the looped engine recording: playbackRate re-pitches AND
+    // time-stretches together, so a faster train sounds higher and chuggier and a
+    // slower one lower and lazier. 1.0 at cruise speed, clamped to [0.5, 1.8].
+    _engRateForSpeed(effSpeed) {
+        const ratio = Math.max(effSpeed / this.cruiseSpeed, 0.05);
+        return Math.min(1.8, Math.max(0.5, Math.pow(ratio, 0.6)));
+    }
+
+    // Glide a looping source toward `rate` (start/end clips are left alone).
+    _setEngRate(src, rate) {
+        if (!src || !src.loop) return;
+        src.playbackRate.setTargetAtTime(rate, this.audioCtx.currentTime, 0.08);
+    }
+
     updateSound() {
-        const vx  = this.train.vx;
-        const vol = Math.min(vx / this.cruiseSpeed, 0.8);
+        const vx   = this.train.vx;
+        // Effective speed includes the hill multiplier, so the engine labors uphill
+        // and races downhill; stop/start thresholds still use the raw vx.
+        const eff  = vx * (this.train.slopeMult ?? 1);
+        const vol  = Math.min(eff / this.cruiseSpeed, 0.8);
+        const rate = this._engRateForSpeed(eff);
 
         switch (this._soundState) {
             case 'idle':
@@ -1274,6 +1319,8 @@ class TrainGame {
                     // — sample-accurate, zero gap between the two clips.
                     const startSrc = this._makeEngSrc('start');
                     const loopSrc  = this._makeEngSrc('loop', /*loop=*/true);
+                    loopSrc.playbackRate.value = rate;   // start clip stays at 1.0 so the loop schedule holds
+                    this._engRate = rate;
                     startSrc.start(t);
                     loopSrc.start(t + this._engBufs.start.duration);
 
@@ -1295,6 +1342,8 @@ class TrainGame {
 
             case 'starting':
                 this._engGain.gain.value = vol;
+                this._engRate = rate;
+                this._setEngRate(this._engPending, rate);
                 if (vx <= 0.05) {
                     // Stopped before start clip finished — cancel both nodes
                     this._stopEngSrc(this._engSrc);
@@ -1308,12 +1357,15 @@ class TrainGame {
 
             case 'running':
                 this._engGain.gain.value = vol;
+                this._engRate = rate;
+                this._setEngRate(this._engSrc, rate);
                 if (vx <= 0.05) {
                     // Cross-fade loop → end clip
                     this._stopEngSrc(this._engSrc);
                     this._engSrc = null;
                     if (this._engBufs.end) {
                         const endSrc = this._makeEngSrc('end');
+                        endSrc.playbackRate.value = this._engRate;  // no pitch jump into the wind-down
                         this._engGain.gain.value = Math.max(vol, 0.1);
                         endSrc.start();
                         endSrc.onended = () => {
@@ -1338,6 +1390,8 @@ class TrainGame {
                     this._engSrc = null;
                     if (this._engBufs.loop) {
                         const loopSrc = this._makeEngSrc('loop', /*loop=*/true);
+                        loopSrc.playbackRate.value = rate;
+                        this._engRate = rate;
                         this._engGain.gain.value = vol;
                         loopSrc.start();
                         this._engSrc = loopSrc;
@@ -1670,10 +1724,12 @@ class TrainGame {
         const playerElev = this.getElevation(this.train.worldX + TRAIN_WIDTH / 2);
         const surfaceY = TRACK_FRONT + 6 - playerElev;
         const grad = ctx.createLinearGradient(0, surfaceY - 30, 0, surfaceY + 300);
-        grad.addColorStop(0,   '#5a7a3a');  // alpine green at surface
-        grad.addColorStop(0.3, '#6b8c42');  // meadow green
-        grad.addColorStop(0.7, '#8B7355');  // brown earth
-        grad.addColorStop(1,   '#5e4a2a');  // dark earth
+        // Snow line: the higher the train climbs, the whiter the ground gets.
+        const snow = clamp01((playerElev - 300) / 900);
+        grad.addColorStop(0,   mixHex('#5a7a3a', '#f2f7ff', snow));  // alpine green → fresh snow
+        grad.addColorStop(0.3, mixHex('#6b8c42', '#e4edf8', snow));  // meadow green → snow
+        grad.addColorStop(0.7, mixHex('#8B7355', '#b9c6d6', snow));  // brown earth → blue-grey rock
+        grad.addColorStop(1,   mixHex('#5e4a2a', '#8a97a8', snow));  // dark earth → dark rock
 
         ctx.fillStyle = grad;
         ctx.beginPath();
@@ -2019,12 +2075,26 @@ class TrainGame {
             ctx.fillStyle = sky;
             ctx.fillRect(0, 0, W, H);
         } else if (theme === 'mountain') {
+            // The sky deepens toward space as the train climbs the giant hill.
+            const alt = clamp01(this.cameraY / Math.max(this.visualAmpMax(), 1)) * 0.85;
             const sky = ctx.createLinearGradient(0, 0, 0, H);
-            sky.addColorStop(0,    '#2a7fc6');  // deep alpine blue
-            sky.addColorStop(0.5,  '#5aaee8');  // bright blue
-            sky.addColorStop(1,    '#8dcaf0');  // pale blue at bottom
+            sky.addColorStop(0,    mixHex('#2a7fc6', '#0b1b3f', alt));  // deep alpine blue → near-black
+            sky.addColorStop(0.5,  mixHex('#5aaee8', '#1c4a86', alt));  // bright blue → deep blue
+            sky.addColorStop(1,    mixHex('#8dcaf0', '#5d8fc4', alt));  // pale blue at bottom
             ctx.fillStyle = sky;
             ctx.fillRect(0, 0, W, H);
+            if (alt > 0.3) {
+                const starAlpha = clamp01((alt - 0.3) / 0.45) * 0.85;
+                const t = Date.now() / 700;
+                ctx.fillStyle = '#ffffff';
+                for (let i = 0; i < 44; i++) {
+                    const sx = ((i * 7919) % 997) / 997 * W;
+                    const sy = ((i * 104729) % 991) / 991 * HORIZON_Y * 0.95;
+                    ctx.globalAlpha = starAlpha * (0.55 + 0.45 * Math.sin(t + i * 1.7));
+                    ctx.fillRect(Math.round(sx), Math.round(sy), 2, 2);
+                }
+                ctx.globalAlpha = 1;
+            }
         } else if (theme === 'candy') {
             const sky = ctx.createLinearGradient(0, 0, 0, H);
             sky.addColorStop(0,    '#b8a0f0');  // soft lavender
@@ -2053,7 +2123,12 @@ class TrainGame {
         // ── Background layer (mountains, city buildings, or candy scenery) ───
         const mLayer = this.layers.find(l => l.name === 'mountains');
         // Far layers lag vertically so height changes feel parallaxed
-        const bgVParallax = theme === 'candy' ? -this.cameraY * (1 - mLayer.speed) : 0;
+        // Candy lags every far layer by its parallax speed. The giant mountain hill is
+        // far taller than that trick can handle, so its far range sinks at most 90 px
+        // (instead of the full climb) and stays visible behind the summit.
+        const bgVParallax = theme === 'candy' ? -this.cameraY * (1 - mLayer.speed)
+            : theme === 'mountain' ? Math.min(this.cameraY * mLayer.speed, 90) - this.cameraY
+            : 0;
         if (bgVParallax) ctx.translate(0, bgVParallax);
         for (const obj of mLayer.objects) {
             const sx = obj.x - this.cameraX * 0.3;
