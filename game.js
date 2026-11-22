@@ -86,7 +86,11 @@ const OPPONENT_CONSTANT_SPEED  = 4.5;
 // target vx) can't fight it and both trains obey the exact same curve.
 const SLOPE_SPEED_MIN  = 0.55;
 const SLOPE_SPEED_MAX  = 1.6;
-const SLOPE_SPEED_LERP = 0.15;   // per-frame smoothing so crests don't snap the speed
+// Hills have inertia: the speed factor chases its target slowly (a time constant of ~0.8 s), so a train
+// that crests a hill slowly gains speed GRADUALLY on the way down, and one that hits a climb at speed
+// carries its momentum up it. Scaled by the level's physics.inertia, so ice and low-gravity levels
+// respond even more sluggishly.
+const SLOPE_SPEED_INERTIA = 0.02;   // fraction of the gap to the target factor closed per frame
 const SLOPE_SPEED_GAIN_DEFAULT = 1.2;
 const SLOPE_SPEED_GAIN = { mountain: 1.3, candy: 0.8, sahara: 0.9 };
 
@@ -990,7 +994,7 @@ class TrainGame {
             target = Math.min(SLOPE_SPEED_MAX, Math.max(SLOPE_SPEED_MIN, 1 - gain * slope));
         }
         const prev = body.slopeMult ?? 1;
-        body.slopeMult = prev + (target - prev) * SLOPE_SPEED_LERP;
+        body.slopeMult = prev + (target - prev) * SLOPE_SPEED_INERTIA * this.physics.inertia;
         return body.slopeMult;
     }
 
