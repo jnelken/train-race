@@ -1411,9 +1411,9 @@ class TrainGame {
         ctx.restore();
     }
 
-    // Draw the open-door overlay for the locomotive at (x, y) = its top-left.
+    // Draw the door overlay (shut or open) for the locomotive at (x, y) = its top-left.
     drawLocoDoors(ctx, x, y) {
-        if (this._doors > 0.01) TRAIN_RIG.drawDoors(ctx, x, y, this._doors);
+        TRAIN_RIG.drawDoors(ctx, x, y, this._doors);
     }
 
     adjustOpponentDifficulty(result) {
@@ -2363,7 +2363,7 @@ class TrainGame {
             const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
             this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*TRAIN_RIG.wheelRow);
         }
-        if (this._doors > 0.01) TRAIN_RIG.drawDoors(ctx, cx, cy, this._doors);   // boarding doors
+        TRAIN_RIG.drawDoors(ctx, cx, cy, this._doors);   // doors: always drawn, shut or open
     }
 
     // Draw as many carts as needed to fill past the left (off-screen) edge.

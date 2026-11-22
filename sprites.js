@@ -39,49 +39,83 @@ const TRAIN_RIG = {
 // Derived anchors (screen px from the car's left edge): centre of each wheel.
 TRAIN_RIG.wheelX = TRAIN_RIG.wheelCols.map(c => (c + 0.5) * TRAIN_RIG.px);
 
-// Doors. Each bay is a pair of sliding leaves over a lit interior. A design supplies this block
-// (bay columns/widths and the rows the opening spans); `drawDoors` then animates it, or a design
-// can replace `drawDoors` outright with its own art (e.g. swing-out doors or a boarding ramp).
+// Doors. Each bay is a pair of sliding leaves over a lit interior, and the leaves are ALWAYS drawn:
+// shut, they are two steel panels with blue windows (like a subway car's doors); opening slides them
+// into the sides of the bay and shows the lit interior. A design supplies this block (bay columns and
+// widths, the rows the opening spans and the colours); `drawDoors` then animates it, or a design can
+// replace `drawDoors` outright with its own art (e.g. swing-out doors or a boarding ramp).
 // open runs 0 (shut) .. 1 (fully open). Positions are art columns/rows in the 40 x 16 grid.
 TRAIN_RIG.doors = {
     cols: [3, 9, 15, 21, 27, 33],     // left art column of each bay
     widths: [5, 5, 5, 5, 5, 4],       // bay width in art px
     rowTop: 4, rowBottom: 9,          // opening spans art rows [rowTop, rowBottom)
-    leaf: '#4a4f58', leafEdge: '#8d949e', interior: '#262b38', light: '#ffe2a0',
+    leaf: '#59626d', leafEdge: '#b4bcc7', leafDark: '#2c323a', header: '#3a414a',
+    glass: '#47a6e8', glassDeep: '#2478b9', glint: '#d9f0ff',
+    interior: '#262b38', light: '#ffe2a0',
 };
 // Screen x of each bay's centre, from the car's left edge (where passengers aim for).
 TRAIN_RIG.doorX = TRAIN_RIG.doors.cols.map((c, i) => (c + TRAIN_RIG.doors.widths[i] / 2) * TRAIN_RIG.px);
 // Screen y (from the car's top) of the doorway floor, where passengers step in.
 TRAIN_RIG.doorFloorY = TRAIN_RIG.doors.rowBottom * TRAIN_RIG.px;
 
-// Default door animation: draw one car's doors at (x, y) = car top-left. A fully shut door is
-// left to the base art, so nothing is drawn at open === 0.
+// Default doors: draw one car's doors at (x, y) = car top-left. Called every frame, shut or not.
 TRAIN_RIG.drawDoors = function (ctx, x, y, open) {
-    if (open <= 0.01) return;
     const d = TRAIN_RIG.doors, px = TRAIN_RIG.px;
+    open = Math.min(1, Math.max(0, open || 0));
     const top = y + d.rowTop * px, h = (d.rowBottom - d.rowTop) * px;
     for (let i = 0; i < d.cols.length; i++) {
         const bx = x + d.cols[i] * px, bw = d.widths[i] * px;
+        const half = bw / 2;
         const gap = bw * open;                               // opening width, from the bay's centre
         const gx = bx + (bw - gap) / 2;
         const leafW = (bw - gap) / 2;
-        // Dark interior with a warm light strip and the far wall's seat line.
-        ctx.fillStyle = d.interior;
-        ctx.fillRect(gx, top, gap, h);
-        ctx.fillStyle = d.light;
-        ctx.globalAlpha = 0.85 * open;
-        ctx.fillRect(gx, top, gap, 2);
-        ctx.globalAlpha = 0.25 * open;
-        ctx.fillRect(gx, top + h * 0.55, gap, 2);
-        ctx.globalAlpha = 1;
-        // Leaves parked at each side of the opening.
-        ctx.fillStyle = d.leaf;
-        ctx.fillRect(bx, top, leafW, h);
-        ctx.fillRect(bx + bw - leafW, top, leafW, h);
-        ctx.fillStyle = d.leafEdge;
-        if (leafW > 1) {
-            ctx.fillRect(bx + leafW - 1, top, 1, h);
-            ctx.fillRect(bx + bw - leafW, top, 1, h);
+        if (open > 0.01) {
+            // Dark interior with a warm light strip and the far wall's seat line.
+            ctx.fillStyle = d.interior;
+            ctx.fillRect(gx, top, gap, h);
+            ctx.fillStyle = d.light;
+            ctx.globalAlpha = 0.85 * open;
+            ctx.fillRect(gx, top, gap, 2);
+            ctx.globalAlpha = 0.25 * open;
+            ctx.fillRect(gx, top + h * 0.55, gap, 2);
+            ctx.globalAlpha = 1;
+        }
+        // Each leaf is a steel panel with a track on top, a sill, a blue window and a kick-plate
+        // ridge. Parked leaves are narrower, so everything inside is scaled by f.
+        const leaf = (lx, lw, outerLeft) => {
+            if (lw < 0.5) return;
+            const f = lw / half;
+            ctx.fillStyle = d.leaf;
+            ctx.fillRect(lx, top, lw, h);
+            ctx.fillStyle = d.header;
+            ctx.fillRect(lx, top, lw, 2);
+            ctx.fillStyle = d.leafDark;
+            ctx.fillRect(lx, top + h - 2, lw, 2);
+            ctx.fillStyle = d.leafEdge;                      // bright edge on the side facing the body
+            ctx.fillRect(outerLeft ? lx : lx + lw - 1, top + 2, 1, h - 4);
+            if (lw >= 4) {
+                const wx = lx + 2 * f, ww = lw - 4 * f, wy = top + 4, wh = 9;
+                ctx.fillStyle = d.leafDark;                  // window frame
+                ctx.fillRect(wx - 1, wy - 1, ww + 2, wh + 2);
+                ctx.fillStyle = d.glass;
+                ctx.fillRect(wx, wy, ww, wh);
+                ctx.fillStyle = d.glassDeep;
+                ctx.fillRect(wx, wy + wh - 3, ww, 3);
+                ctx.fillStyle = d.glint;                     // a slanted glint across the glass
+                ctx.globalAlpha = 0.7;
+                ctx.fillRect(wx + 1, wy + 1, Math.max(1, ww * 0.3), 3);
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = d.leafEdge;                  // kick-plate ridge
+                ctx.globalAlpha = 0.55;
+                ctx.fillRect(lx + 2 * f, top + h - 6, lw - 4 * f, 1);
+                ctx.globalAlpha = 1;
+            }
+        };
+        leaf(bx, leafW, true);
+        leaf(bx + bw - leafW, leafW, false);
+        if (open < 0.12) {                                   // the seam where the leaves meet
+            ctx.fillStyle = d.leafDark;
+            ctx.fillRect(bx + half - 1, top + 2, 2, h - 4);
         }
     }
 };
