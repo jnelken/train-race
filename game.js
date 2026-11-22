@@ -50,6 +50,19 @@ const TRAIN_ANGLE_LERP   = 0.18;   // per-frame pitch smoothing toward target an
 const AIRBORNE_MAX_PITCH = 0.55;   // rad (~31°) — pitch clamp during flight
 const CART_COUNT         = 12;     // trailing carts simulated & drawn per train
 const FX_MAX             = 420;    // cap on live hazard particles
+
+// ── Stations ──────────────────────────────────────────────────────────────
+// Every race starts and ends at a station: a platform with a canopy and a sign. Coordinates
+// are in the same units as train.worldX (the locomotive's left edge).
+const START_RAMP_SECONDS = 5;      // trains pull out from a standstill and reach cruise speed by now
+const START_BOOST_CAP    = 8;      // taps that can queue during the pull-out (they fire at full speed)
+const STATION_BEHIND     = 1500;   // platform length behind the stop mark (alongside the cars)
+const STATION_AHEAD      = 260;    // platform length past the locomotive
+const FINISH_STOP_DIST   = 900;    // the locomotive halts this far past the finish line
+const STATION_ZOOM       = 0.72;   // the camera pulls back this far at the end station
+const STATION_ANCHOR_Y   = 316;    // screen row the zoom pivots on (just above the platform front)
+const PLATFORM_TOP       = 290;    // platform surface y (back edge)
+const PLATFORM_DEPTH     = 30;     // surface height, then a 14 px front face below it
 const AXLE_OFFSET        = 56;     // px from a car's center to each wheel contact point
 const OPPONENT_SPEED_STEP    = 0.05;
 const OPPONENT_SPEED_VARIANCE = 0.05;
@@ -469,8 +482,7 @@ class TrainGame {
         this.tunnelZones  = this.generateTunnelZones();
         this.bridgeZones  = this.generateBridgeZones();
         this.cars         = [];
-        this.crowd        = [];
-        this.crowdSpawned = false;
+        this.initStation();
 
         this.generateInitialScenery();
         this.keys = {};
@@ -818,7 +830,7 @@ class TrainGame {
 
     activeBoostCount() {
         const now = Date.now();
-        return this.boostTokens.filter(t => now - t < this.physics.boostMs).length;
+        return this.boostTokens.filter(t => now >= t && now - t < this.physics.boostMs).length;
     }
 
     // Total effective-speed multiplier for one train: the hill multiplier times the
@@ -949,27 +961,100 @@ class TrainGame {
         };
     }
 
-    spawnCrowd() {
-        this.crowdSpawned = true;
-        const stoppedX = Math.max(this.train.worldX, this.finishLineWorldX);
-        const count = 24 + Math.floor(Math.random() * 12);  // 24–36 people
-        for (let i = 0; i < count; i++) {
-            const side = Math.random() < 0.5 ? 1 : -1;
-            // Spread out to both sides of the stopped train, staggered depths
-            const ox      = TRAIN_WIDTH + 40 + Math.random() * 300;  // 200–500 units out
-            const onFront = Math.random() < 0.65;  // 65 % crowd the player's (front) track
-            const crowdWorldX = stoppedX + side * ox;
-            const elevOffset = this.getElevation(crowdWorldX);
-            this.crowd.push({
-                x:       crowdWorldX,
-                trackY:  (onFront ? TRACK_FRONT - 20 : TRACK_BACK - 20) - elevOffset,
-                targetX: stoppedX + (Math.random() - 0.5) * TRAIN_WIDTH * 0.6,
-                color:   `hsl(${Math.floor(Math.random() * 360)},70%,60%)`,
-                phase:   Math.random() * Math.PI * 2,
-                speed:   2.2 + Math.random() * 2.0,   // faster walk: 2–4 px/frame
-                opacity: 1.0,
-                done:    false,
-            });
+    // ── Stations, start ramp and finish sequence ────────────────────────────
+    // Per-race station state: trains wait at the start platform with their doors open, a crowd
+    // waits at both stations, and nothing has finished yet. Called from the constructor and reset().
+    initStation() {
+        this.zoom = 1;
+        this.overlayAt = null;
+        for (const body of [this.train, this.opponent]) {
+            body.finished = false;
+            body.brake = null;
+            body.stopped = false;
+            body.boardDone = false;
+            body.doorOpen = 1;
+            body.doorTarget = 1;
+        }
+        this.stations = this.buildStations();
+        this.crowd = this.spawnStationCrowd();
+    }
+
+    buildStations() {
+        const make = (name, stopX, label, signX) => ({ name, stopX, label, signX, x0: stopX - STATION_BEHIND, x1: stopX + STATION_AHEAD });
+        return {
+            start:  make('start', 0, 'START', 30),
+            finish: make('finish', this.finishLineWorldX + FINISH_STOP_DIST, 'FINISH', this.finishLineWorldX),
+        };
+    }
+
+    // People waiting on a platform. Finish-station people get a train to board once a train has
+    // crossed the line (assignBoarders); start-station people just wait.
+    spawnStationCrowd() {
+        const out = [];
+        const skins = ['#f5c98b', '#e0ac69', '#c68642', '#8d5524', '#ffdbac'];
+        const make = (st, count, lo, hi) => {
+            for (let i = 0; i < count; i++) {
+                const d = Math.random();
+                out.push({
+                    station: st.name, boards: null, state: 'wait', layer: 'front',
+                    x: lo + ((i + Math.random() * 0.85) / count) * (hi - lo),
+                    fy: PLATFORM_TOP + 7 + d * (PLATFORM_DEPTH - 12),
+                    color: `hsl(${Math.floor(Math.random() * 360)},65%,58%)`,
+                    skin: skins[Math.floor(Math.random() * skins.length)],
+                    hair: ['#2b1d12', '#5b3a1f', '#c9a227', '#1a1a1a', '#8c3b1d'][Math.floor(Math.random() * 5)],
+                    phase: Math.random() * Math.PI * 2,
+                    speed: 1.5 + Math.random() * 1.1,
+                    delay: Math.floor(Math.random() * 150),
+                    bag: Math.random() < 0.35,
+                    doorX: 0, enter: 0, scale: 1, alpha: 1,
+                });
+            }
+        };
+        make(this.stations.finish, 30, this.stations.finish.stopX - 1300, this.stations.finish.stopX + 200);
+        make(this.stations.start, 10, -1200, 140);
+        return out;
+    }
+
+    // 0 at the station, easing up to 1 over START_RAMP_SECONDS of racing; 1 once the race is ending.
+    rampFactor() {
+        if (this.gameState.result) return 1;
+        if (!this.raceStarted) return 0;
+        const r = Math.min(this.gameState.time / START_RAMP_SECONDS, 1);
+        return r * r * (3 - 2 * r);
+    }
+
+    // The result screen (and "press any key") waits for the trains to stop and the boarding to end.
+    canRestart() {
+        return !!this.overlayAt && Date.now() - this.overlayAt > 350;
+    }
+
+    // Camera: follow the player; once someone crosses the line, ease out to the station.
+    updateCamera() {
+        let target = this.train.worldX, zoomTarget = 1;
+        if (this.gameState.result) {
+            const focus = this.stations.finish.stopX - 380;
+            target = Math.min(focus, this.train.worldX + 200);
+            zoomTarget = STATION_ZOOM;
+        }
+        this.cameraX += (target - this.cameraX) * CAMERA_LERP;
+        this.cameraY += (this.train.elev - this.cameraY) * CAMERA_LERP;
+        this.zoom += (zoomTarget - this.zoom) * 0.03;
+        if (Math.abs(this.zoom - zoomTarget) < 0.002) this.zoom = zoomTarget;
+    }
+
+    // A train past the finish line brakes at a constant rate that halts it at the stop mark.
+    brakeTrain(body) {
+        if (body.stopped) { body.vx = 0; return; }
+        body.vx = Math.max(body.vx - body.brake.a, 0);   // constant deceleration (see checkFinish)
+        if (body.vx < 0.03) { body.vx = 0; body.stopped = true; }
+    }
+
+    // The winner's train gets most of the waiting crowd; the other train gets the rest.
+    assignBoarders() {
+        const winner = this.gameState.result === 'lose' ? 'opponent' : 'player';
+        const other = winner === 'player' ? 'opponent' : 'player';
+        for (const p of this.crowd) {
+            if (p.station === 'finish') p.boards = Math.random() < 0.72 ? winner : other;
         }
     }
 
@@ -988,17 +1073,261 @@ class TrainGame {
         });
     }
 
-    updateCrowd() {
+    // Per-frame station logic: door animation, the boarding crowd, and when the result appears.
+    updateStation(dt) {
+        const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+        const lane = { player: this.train, opponent: this.opponent };
+        for (const body of [this.train, this.opponent]) {
+            if (!body.finished) body.doorTarget = this.raceStarted ? 0 : 1;     // doors shut as the race begins
+            else if (body.stopped) body.doorTarget = body.boardDone ? 0 : 1;     // open at the platform
+            else body.doorTarget = 0;
+            body.doorOpen += clamp(body.doorTarget - body.doorOpen, -dt * 1.7, dt * 1.7);
+        }
+        if (!this.gameState.result) return;
+
+        const fin = this.stations.finish;
         for (const p of this.crowd) {
-            if (p.done) continue;
-            const dx = p.targetX - p.x;
-            p.x += Math.sign(dx) * Math.min(Math.abs(dx), p.speed);
-            if (Math.abs(dx) < p.speed) {
-                p.opacity -= 0.018;  // ~55-frame fade (≈ 0.9 s at 60 fps)
-                if (p.opacity <= 0) p.done = true;
+            if (p.station !== 'finish' || p.state === 'done' || !p.boards) continue;
+            const body = lane[p.boards];
+            const step = p.speed * 60 * dt;
+            if (p.state === 'wait') {
+                if (body.stopped && body.doorOpen > 0.85 && (p.delay -= 60 * dt) <= 0) {
+                    this.pickDoor(p, body, fin);
+                    p.state = 'along';
+                }
+            } else if (p.state === 'along') {
+                const dx = p.doorX - p.x;
+                p.x += Math.sign(dx) * Math.min(Math.abs(dx), step);
+                if (Math.abs(dx) <= step) p.state = 'up';
+            } else if (p.state === 'up') {
+                const dy = p.approachY - p.fy;
+                p.fy += Math.sign(dy) * Math.min(Math.abs(dy), step * 0.8);
+                if (Math.abs(dy) <= step * 0.8) p.state = 'enter';
+            } else if (p.state === 'enter') {
+                p.enter = Math.min(1, p.enter + dt / 0.5);
+                p.fy = p.approachY - p.enter * 20;
+                p.scale = 1 - 0.3 * p.enter;
+                p.alpha = 1 - p.enter * p.enter;
+                if (p.enter >= 1) p.state = 'done';
             }
         }
-        this.crowd = this.crowd.filter(p => !p.done);
+        for (const who of ['player', 'opponent']) {
+            const body = lane[who];
+            if (body.stopped && !body.boardDone &&
+                !this.crowd.some(p => p.station === 'finish' && p.boards === who && p.state !== 'done')) {
+                body.boardDone = true;
+            }
+        }
+        if (!this.overlayAt) {
+            // A win (or tie) shows the result once the player's train has stopped and boarded;
+            // a loss waits for the player to finish too, so they see the rival's crowd board.
+            const done = (b) => b.stopped && b.boardDone;
+            const ready = this.gameState.result === 'lose' ? done(this.train) && done(this.opponent) : done(this.train);
+            if (ready) {
+                this.overlayAt = Date.now() + 900;                                 // let the doors close first
+            } else if (Date.now() - this.gameState.endTime > 40000) {
+                this.overlayAt = Date.now();                                       // never wait forever
+            }
+        }
+    }
+
+    // Choose the doorway a passenger heads for: one of the three nearest on that train's platform side.
+    pickDoor(p, body, st) {
+        const doors = [];
+        for (let i = 0; i <= 8; i++) {
+            const left = i === 0 ? body.worldX : (body.carts[i - 1] ? body.carts[i - 1].centerX - TRAIN_WIDTH / 2 : null);
+            if (left === null) continue;
+            for (const dx of TRAIN_RIG.doorX) {
+                const x = left + dx;
+                if (x > st.x0 + 30 && x < st.x1 - 30) doors.push(x);
+            }
+        }
+        doors.sort((a, b) => Math.abs(a - p.x) - Math.abs(b - p.x));
+        p.doorX = doors.length ? doors[Math.floor(Math.random() * Math.min(3, doors.length))] : p.x;
+        const laneY = p.boards === 'player' ? TRACK_FRONT : TRACK_BACK;
+        // Step up to just below the doorway, then climb in.
+        p.approachY = laneY - TRAIN_HEIGHT + TRAIN_RIG.doorFloorY + 22;
+    }
+
+    // ── Station drawing ─────────────────────────────────────────────────────
+    // 'ground': the platform slab and its furniture (under the trains). 'over': canopy, posts
+    // and the hanging sign (in front of the trains, so they pass beneath).
+    drawStations(ctx, pass) {
+        if (!this.stations) return;
+        const W = this.canvas.width;
+        for (const st of [this.stations.start, this.stations.finish]) {
+            const sa = this.worldToScreen(st.x0), sb = this.worldToScreen(st.x1);
+            if (sb < -80 || sa > W + 80) continue;
+            if (pass === 'ground') this.drawPlatform(ctx, st, W);
+            else this.drawCanopy(ctx, st, W);
+        }
+    }
+
+    drawPlatform(ctx, st, W) {
+        const step = 40;
+        const x0 = Math.max(st.x0, this.cameraX - W / 2 - 160), x1 = Math.min(st.x1, this.cameraX + W / 2 + 160);
+        const pts = [];
+        for (let x = Math.floor(x0 / step) * step; x < x1 + step; x += step) {
+            const xx = Math.min(Math.max(x, st.x0), st.x1);
+            pts.push([this.worldToScreen(xx), this.getElevation(xx)]);
+            if (xx >= st.x1) break;
+        }
+        if (pts.length < 2) return;
+        const poly = (top, bottom, color) => {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            pts.forEach(([sx, e], i) => (i ? ctx.lineTo(sx, top - e) : ctx.moveTo(sx, top - e)));
+            for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(pts[i][0], bottom - pts[i][1]);
+            ctx.closePath();
+            ctx.fill();
+        };
+        const top = PLATFORM_TOP, bot = PLATFORM_TOP + PLATFORM_DEPTH;
+        poly(bot, bot + 14, '#6c747d');                    // front face
+        poly(top, bot, '#a9b1b9');                         // surface
+        poly(top, top + 3, '#f1c40f');                     // yellow safety edge
+        poly(bot + 10, bot + 14, 'rgba(0,0,0,0.28)');      // shadow under the lip
+        // Paving lines and dark edge tiles, world-aligned so they scroll with the platform.
+        ctx.strokeStyle = 'rgba(70,80,92,0.4)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let x = Math.ceil(x0 / 64) * 64; x < x1; x += 64) {
+            const sx = this.worldToScreen(x), e = this.getElevation(x);
+            ctx.moveTo(sx, top + 3 - e);
+            ctx.lineTo(sx - 5, bot - e);
+        }
+        ctx.stroke();
+        // Benches and bins between the people.
+        for (let x = Math.ceil((st.x0 + 120) / 360) * 360; x < st.x1 - 80; x += 360) {
+            if (x < x0 - 60 || x > x1 + 60) continue;
+            const sx = this.worldToScreen(x), e = this.getElevation(x), by = bot - 4 - e;
+            ctx.fillStyle = '#5b4636';
+            ctx.fillRect(sx, by - 11, 34, 4);
+            ctx.fillRect(sx, by - 17, 34, 3);
+            ctx.fillStyle = '#2f3740';
+            ctx.fillRect(sx + 2, by - 7, 3, 7);
+            ctx.fillRect(sx + 29, by - 7, 3, 7);
+            ctx.fillStyle = '#3a8a4a';                       // litter bin
+            ctx.fillRect(sx + 52, by - 14, 11, 14);
+            ctx.fillStyle = '#25602f';
+            ctx.fillRect(sx + 51, by - 16, 13, 3);
+        }
+    }
+
+    drawCanopy(ctx, st, W) {
+        const roofY = 138 - this.getElevation(st.stopX);
+        const a = Math.max(this.worldToScreen(st.x0), -40), b = Math.min(this.worldToScreen(st.x1), W + 40);
+        if (b <= a) return;
+        const t = Date.now() / 1000;
+        // Posts down to the platform, drawn first so the roof overlaps their tops.
+        for (let x = Math.ceil((st.x0 + 40) / 260) * 260; x < st.x1; x += 260) {
+            const sx = this.worldToScreen(x);
+            if (sx < -20 || sx > W + 20) continue;
+            const e = this.getElevation(x);
+            ctx.fillStyle = '#56626e';
+            ctx.fillRect(sx - 3, roofY + 8, 6, PLATFORM_TOP - e - roofY - 6);
+            ctx.fillStyle = '#7b8896';
+            ctx.fillRect(sx - 3, roofY + 8, 2, PLATFORM_TOP - e - roofY - 6);
+            ctx.fillStyle = '#3d4650';
+            ctx.fillRect(sx - 6, PLATFORM_TOP - e - 3, 12, 4);
+        }
+        // Roof slab with a bright top edge and a scalloped fascia.
+        ctx.fillStyle = '#38424d';
+        ctx.fillRect(a, roofY, b - a, 9);
+        ctx.fillStyle = '#6a7885';
+        ctx.fillRect(a, roofY - 3, b - a, 3);
+        ctx.fillStyle = '#2a323b';
+        ctx.fillRect(a, roofY + 9, b - a, 2);
+        for (let x = Math.ceil(st.x0 / 130) * 130; x < st.x1; x += 130) {
+            const sx = this.worldToScreen(x);
+            if (sx < -10 || sx > W + 10) continue;
+            ctx.fillStyle = 'rgba(255,226,150,0.16)';        // lamp glow
+            ctx.beginPath();
+            ctx.ellipse(sx, roofY + 14, 26, 9, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffe9a8';
+            ctx.fillRect(sx - 8, roofY + 10, 16, 3);
+        }
+        // Hanging sign + clock.
+        const sx = this.worldToScreen(st.signX);
+        if (sx > -140 && sx < W + 140) {
+            ctx.strokeStyle = '#2a323b';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(sx - 46, roofY + 9); ctx.lineTo(sx - 46, roofY + 22);
+            ctx.moveTo(sx + 46, roofY + 9); ctx.lineTo(sx + 46, roofY + 22);
+            ctx.stroke();
+            ctx.fillStyle = '#e8eef3';
+            ctx.fillRect(sx - 62, roofY + 20, 124, 32);
+            ctx.fillStyle = st.name === 'finish' ? '#1b5e8a' : '#1e6b3a';
+            ctx.fillRect(sx - 59, roofY + 23, 118, 26);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 19px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(st.label, sx, roofY + 43);
+            ctx.textAlign = 'left';
+            // A little station clock to the right of the sign.
+            const cx = sx + 96, cy = roofY + 36;
+            ctx.strokeStyle = '#2a323b';
+            ctx.beginPath(); ctx.moveTo(cx, roofY + 9); ctx.lineTo(cx, cy - 13); ctx.stroke();
+            ctx.fillStyle = '#f4f1e6';
+            ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = '#2a323b'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.stroke();
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.sin(t * 0.05) * 7, cy - Math.cos(t * 0.05) * 7);
+            ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.sin(t * 0.6) * 10, cy - Math.cos(t * 0.6) * 10);
+            ctx.stroke();
+        }
+    }
+
+    // Passengers. layer 'mid' sits between the two trains (people heading for the back train once
+    // they have stepped off the platform); 'front' is everyone else, in front of both.
+    drawCrowdLayer(ctx, layer) {
+        if (!this.crowd || !this.crowd.length) return;
+        for (const p of this.crowd) {
+            const onPlatform = p.fy > TRACK_FRONT + 6;
+            const mine = (onPlatform || p.boards !== 'opponent') ? 'front' : 'mid';
+            if (mine === layer) this.drawPerson(ctx, p);
+        }
+    }
+
+    drawPerson(ctx, p) {
+        if (p.alpha <= 0) return;
+        const sx = this.worldToScreen(p.x);
+        if (sx < -24 || sx > this.canvas.width + 24) return;
+        const t = Date.now() / 1000 + p.phase;
+        const walking = p.state === 'along' || p.state === 'up';
+        const bounce = walking ? Math.abs(Math.sin(t * 9)) * 3 : Math.sin(t * 1.3) * 0.5;
+        const swing = walking ? Math.sin(t * 9) * 3 : 0;
+        const y = p.fy - this.getElevation(p.x);
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.translate(sx, y);
+        ctx.scale(p.scale, p.scale);
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';                  // shadow
+        ctx.beginPath(); ctx.ellipse(0, 1, 7, 2.6, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#2f3440';                           // legs
+        ctx.fillRect(-3, -4 - bounce, 3, 5 + swing);
+        ctx.fillRect(0, -4 - bounce, 3, 5 - swing);
+        ctx.fillStyle = p.color;                             // coat
+        ctx.fillRect(-4, -12 - bounce, 8, 8);
+        ctx.fillRect(-7, -11 - bounce, 3, 5);
+        ctx.fillRect(4, -11 - bounce, 3, 5);
+        ctx.fillStyle = p.skin;                              // head
+        ctx.fillRect(-3, -19 - bounce, 6, 7);
+        ctx.fillStyle = p.hair;
+        ctx.fillRect(-3.5, -20 - bounce, 7, 3);
+        if (p.bag) {
+            ctx.fillStyle = '#6b4a2a';
+            ctx.fillRect(4, -8 - bounce, 5, 6);
+        }
+        ctx.restore();
+    }
+
+    // Draw the open-door overlay for the locomotive at (x, y) = its top-left.
+    drawLocoDoors(ctx, x, y) {
+        if (this._doors > 0.01) TRAIN_RIG.drawDoors(ctx, x, y, this._doors);
     }
 
     adjustOpponentDifficulty(result) {
@@ -1099,8 +1428,7 @@ class TrainGame {
         this.tunnelZones  = this.generateTunnelZones();
         this.bridgeZones  = this.generateBridgeZones();
         this.cars         = [];
-        this.crowd        = [];
-        this.crowdSpawned = false;
+        this.initStation();
         this.generateInitialScenery();
 
         this.honkStop(0.05);
@@ -1144,7 +1472,15 @@ class TrainGame {
         if (this.paused) return;
         if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
         this.raceStarted = true;
-        this.boostTokens.push(Date.now());
+        const now = Date.now();
+        if (this.rampFactor() < 1) {
+            // Still pulling out of the station: the tap queues and fires when the trains reach
+            // full speed (START_RAMP_SECONDS into the race).
+            if (this.boostTokens.filter(t => t > now).length >= START_BOOST_CAP) return;
+            this.boostTokens.push(now + (START_RAMP_SECONDS - this.gameState.time) * 1000);
+        } else {
+            this.boostTokens.push(now);
+        }
     }
 
     resetUI() {
@@ -1157,8 +1493,7 @@ class TrainGame {
         window.addEventListener('keydown', (e) => {
             if (e.repeat) return;
 
-            if (this.gameState.result && this.gameState.endTime &&
-                Date.now() - this.gameState.endTime > 2500) {
+            if (this.canRestart()) {
                 e.preventDefault();
                 this.reset();
                 this.resetUI();
@@ -1205,8 +1540,7 @@ class TrainGame {
         this.canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
 
-            if (this.gameState.result && this.gameState.endTime &&
-                Date.now() - this.gameState.endTime > 2500) {
+            if (this.canRestart()) {
                 this.reset();
                 this.resetUI();
                 return;
@@ -1255,14 +1589,23 @@ class TrainGame {
         }, { passive: false });
     }
 
+    // Each train that crosses the line starts braking toward the station stop. The first one
+    // across decides the result, but the race carries on: a player who is behind keeps driving
+    // (boost still works) and watches the rival's crowd board while they pull in.
     checkFinish() {
-        const pf = this.train.worldX    >= this.finishLineWorldX;
-        const of = this.opponent.worldX >= this.finishLineWorldX;
-        if (pf || of) {
+        const F = this.finishLineWorldX;
+        for (const [body, who] of [[this.train, 'player'], [this.opponent, 'opponent']]) {
+            if (body.finished || body.worldX < F) continue;
+            body.finished = true;
+            const v0 = Math.max(body.vx, 1.5);
+            const dist = Math.max(this.stations.finish.stopX - body.worldX, 200);
+            body.brake = { a: (v0 * v0) / (2 * dist) };   // constant deceleration that halts at the mark
+            if (this.gameState.result) continue;
+
+            const other = who === 'player' ? this.opponent : this.train;
             this.gameState.isRunning = false;
-            if (pf && of) this.gameState.result = 'tie';
-            else if (pf)  this.gameState.result = 'win';
-            else          this.gameState.result = 'lose';
+            this.gameState.result = other.worldX >= F ? 'tie' : who === 'player' ? 'win' : 'lose';
+            this.assignBoarders();
             if (!this.gameState.endTime) {
                 this.gameState.endTime = Date.now();
                 if (this.gameState.result === 'win' && !this._winSoundPlayed) {
@@ -1422,71 +1765,44 @@ class TrainGame {
 
     update(deltaTime) {
         if (this.paused) return;
+        this.updateStation(deltaTime);
 
-        // ── Post-race: coast to stop, animate crowd, keep cars moving ──────────
-        if (!this.gameState.isRunning) {
-            this.train.vx    *= this.train.friction;
-            this.applyTrackGravity(this.train, 0);
-            this.train.worldX += this.train.vx;
-            this.updateTrainVertical(this.train);
-            this.train.y      = TRACK_FRONT - TRAIN_HEIGHT - this.train.elev;
-            this.cameraX     += (this.train.worldX - this.cameraX) * CAMERA_LERP;
-            this.cameraY     += (this.train.elev - this.cameraY) * CAMERA_LERP;
-            this.wheelFrame  += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
-            if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
-            this.opponent.vx    *= this.train.friction;
-            this.applyTrackGravity(this.opponent, 0, OPPONENT_SPEED_CEILING);
-            this.opponent.worldX += this.opponent.vx;
-            this.updateTrainVertical(this.opponent);
-            this.opponent.y      = TRACK_BACK - TRAIN_HEIGHT - this.opponent.elev;
-            this.opponent.wheelFrame += Math.abs(this.opponent.vx) * this.wheelAnimationSpeed;
-            if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
-            this.updateCars();
-            this.updateFx(deltaTime, false);
-            // Wait until the train nearly stops before placing the crowd,
-            // so people spawn at the actual stopped position, not the finish line.
-            if (!this.crowdSpawned && Math.abs(this.train.vx) < 0.05) this.spawnCrowd();
-            this.updateCrowd();
-            this.updateSound();  // fade engine out as train coasts to a stop
-            return;
-        }
-
-        // Active boost tokens: each tap gives +5 % for 1 s (no hold-stacking)
+        // Start ramp: both trains pull out of the station from a standstill and reach cruise
+        // speed START_RAMP_SECONDS into the race. Boost taps queue meanwhile (addBoost) and only
+        // act once the trains are at full speed.
         const now = Date.now();
+        const ramp = this.rampFactor();
         this.boostTokens = this.boostTokens.filter(t => now - t < this.physics.boostMs);
-        const activeBoosts   = this.boostTokens.length;
+        const activeBoosts    = ramp >= 1 ? this.activeBoostCount() : 0;
         const boostMultiplier = 1 + activeBoosts * this.physics.boostPer;
-        const effectiveMax   = this.cruiseSpeed * boostMultiplier;
+        const effectiveMax    = this.cruiseSpeed * boostMultiplier * ramp;
 
-        // Friction first, then acceleration — raw equilibrium is 4.0,
-        // but the race caps the default cruise speed at cruiseSpeed before boosts.
-        this.train.vx *= this.train.friction;
-
-        // Auto-accelerate: always push forward once the race has started.
-        // Boost tokens (tap / space) raise the ceiling with no stack cap.
-        if (this.raceStarted) {
-            this.train.vx = Math.min(this.train.vx + this.train.acceleration * boostMultiplier, effectiveMax);
+        // ── Player ──────────────────────────────────────────────────────────
+        const T = this.train;
+        if (T.finished) {
+            this.brakeTrain(T);   // past the line: brake smoothly to the platform stop
+        } else {
+            // Friction first, then acceleration — raw equilibrium is 4.0, but the race caps the
+            // default cruise speed at cruiseSpeed before boosts.
+            T.vx *= T.friction;
+            // Auto-accelerate once the race has started. Boost tokens raise the ceiling with no stack cap.
+            if (this.raceStarted) T.vx = Math.min(T.vx + T.acceleration * boostMultiplier, effectiveMax);
+            // Manual braking still available via ArrowLeft / A on keyboard
+            if (this.keys['ArrowLeft'] || this.keys['a']) {
+                T.vx = Math.max(T.vx - T.acceleration, -this.cruiseSpeed * 0.5);
+            }
+            // Slope gravity: uphill slows, downhill speeds. Same additive curve for both trains.
+            if (this.raceStarted) this.applyTrackGravity(T, ramp < 1 ? 0 : 0.2);
         }
-        // Manual braking still available via ArrowLeft / A on keyboard
-        if (this.keys['ArrowLeft'] || this.keys['a']) {
-            this.train.vx = Math.max(this.train.vx - this.train.acceleration, -this.cruiseSpeed * 0.5);
-        }
-        // Mountain/candy slope gravity: uphill slows, downhill speeds. Same
-        // additive curve for player and opponent so hills stay fair.
-        if (this.raceStarted) {
-            this.applyTrackGravity(this.train);
-        }
-        const playerMult = this.speedMultFor(this.train, 'player');
-        this.train.worldX += this.train.vx * playerMult;
-        this.updateTrainVertical(this.train);
-        this.cameraX += (this.train.worldX - this.cameraX) * CAMERA_LERP;
-        this.cameraY += (this.train.elev - this.cameraY) * CAMERA_LERP;
-        this.train.y = TRACK_FRONT - TRAIN_HEIGHT - this.train.elev;
+        const playerMult = T.finished ? 1 : this.speedMultFor(T, 'player');
+        T.worldX += T.vx * playerMult;
+        this.updateTrainVertical(T);
+        T.y = TRACK_FRONT - TRAIN_HEIGHT - T.elev;
+        if (T.vx > 0 && !T.finished) this.gameState.distance += T.vx * playerMult;
 
-        if (this.train.vx > 0) this.gameState.distance += this.train.vx * playerMult;
-
-        this.wheelFrame += Math.abs(this.train.vx) * this.wheelAnimationSpeed;
+        this.wheelFrame += Math.abs(T.vx) * this.wheelAnimationSpeed;
         if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
+        this.updateCamera();
 
         // Parallax layer management — all coordinates in parallax-space
         // (obj.x is the screen-x when cameraX === 0; visible range = [parallaxOffset, parallaxOffset + W])
@@ -1510,42 +1826,42 @@ class TrainGame {
             }
         }
 
-        // Opponent AI — stays still until player moves
+        // Opponent waits at the station until the player moves
         if (!this.raceStarted) return;
 
-        // Constant-speed opponent (see OPPONENT_CONSTANT_SPEED). Slant, boost budget and
-        // adaptive difficulty no longer change its speed; boosting stays off so the
-        // flame never shows without an effect.
-        const gap = this.opponent.worldX - this.train.worldX;
-        this.opponent.boosting = false;
-        const oppEffectiveTop = Math.min(OPPONENT_CONSTANT_SPEED, OPPONENT_SPEED_CEILING);
-
-        // Flat-ground AI target: the constant speed, or 40% of it when far ahead.
-        const tooFarAhead  =  this.canvas.width * 0.55;
-        const tooFarBehind = -this.canvas.width * 0.55;
-
-        let targetSpeed;
-        if      (gap > tooFarAhead)  targetSpeed = oppEffectiveTop * 0.4;
-        else if (gap < tooFarBehind) targetSpeed = oppEffectiveTop;
-        else                         targetSpeed = oppEffectiveTop;
-
-        const diff = targetSpeed - this.opponent.vx;
-        if (!this.opponent.initialRampDone) {
-            this.opponent.vx += diff * 0.08 * this.physics.inertia;
-            if (Math.abs(diff) < 0.05) this.opponent.initialRampDone = true;
+        // ── Opponent ────────────────────────────────────────────────────────
+        const O = this.opponent;
+        if (O.finished) {
+            this.brakeTrain(O);
         } else {
-            // Seek target at player-comparable accel. The old cruise/(15*60)
-            // maxDelta (~0.005/frame) lost to slope gravity and pinned vx at 0.2.
-            const maxDelta = Math.max(this.train.acceleration, OPPONENT_SPEED_RESPONSIVENESS * this.physics.inertia);
-            this.opponent.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
-        }
-        this.applyTrackGravity(this.opponent, 0.2, OPPONENT_SPEED_CEILING);
+            // Constant-speed opponent (see OPPONENT_CONSTANT_SPEED). Slant, boost budget and
+            // adaptive difficulty no longer change its speed; boosting stays off so the flame
+            // never shows without an effect. It pulls out of the station on the same ramp.
+            const gap = O.worldX - T.worldX;
+            O.boosting = false;
+            const oppEffectiveTop = Math.min(OPPONENT_CONSTANT_SPEED, OPPONENT_SPEED_CEILING);
 
-        this.opponent.worldX    += this.opponent.vx * this.speedMultFor(this.opponent, 'opponent');
-        this.updateTrainVertical(this.opponent);
-        this.opponent.y = TRACK_BACK - TRAIN_HEIGHT - this.opponent.elev;
-        this.opponent.wheelFrame += this.opponent.vx * this.wheelAnimationSpeed;
-        if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
+            // Flat-ground AI target: the constant speed, or 40% of it when far ahead.
+            const tooFarAhead = this.canvas.width * 0.55;
+            const targetSpeed = (gap > tooFarAhead ? oppEffectiveTop * 0.4 : oppEffectiveTop) * ramp;
+
+            const diff = targetSpeed - O.vx;
+            if (!O.initialRampDone) {
+                O.vx += diff * 0.08 * this.physics.inertia;
+                if (Math.abs(diff) < 0.05) O.initialRampDone = true;
+            } else {
+                // Seek target at player-comparable accel. The old cruise/(15*60)
+                // maxDelta (~0.005/frame) lost to slope gravity and pinned vx at 0.2.
+                const maxDelta = Math.max(T.acceleration, OPPONENT_SPEED_RESPONSIVENESS * this.physics.inertia);
+                O.vx += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
+            }
+            this.applyTrackGravity(O, ramp < 1 ? 0 : 0.2, OPPONENT_SPEED_CEILING);
+        }
+        O.worldX += O.vx * (O.finished ? 1 : this.speedMultFor(O, 'opponent'));
+        this.updateTrainVertical(O);
+        O.y = TRACK_BACK - TRAIN_HEIGHT - O.elev;
+        O.wheelFrame += Math.abs(O.vx) * this.wheelAnimationSpeed;
+        if (O.wheelFrame >= TRAIN_SPRITES.wheels.length) O.wheelFrame = 0;
 
         this.updateCars();
         this.updateMarks();
@@ -1946,6 +2262,7 @@ class TrainGame {
             const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
             this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*TRAIN_RIG.wheelRow);
         }
+        if (this._doors > 0.01) TRAIN_RIG.drawDoors(ctx, cx, cy, this._doors);   // boarding doors
     }
 
     // Draw as many carts as needed to fill past the left (off-screen) edge.
@@ -2468,43 +2785,6 @@ class TrainGame {
         }
     }
 
-    drawCrowdPerson(ctx, person) {
-        const sx = this.worldToScreen(person.x);
-        if (sx < -14 || sx > this.canvas.width + 14) return;
-        const t      = Date.now() / 160 + person.phase;
-        const bounce = Math.abs(Math.sin(t)) * 6;
-        // Alternate leg stride so it looks like walking
-        const legSwing = Math.sin(t * 2.5) * 3;
-        const sy = person.trackY - bounce;
-        ctx.globalAlpha = person.opacity;
-
-        // Shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        ctx.beginPath();
-        ctx.ellipse(sx, person.trackY + 3, 7, 3, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Body (coat/jacket colour)
-        ctx.fillStyle = person.color;
-        ctx.fillRect(sx - 4, sy - 10, 8, 7);  // torso
-
-        // Head
-        ctx.fillStyle = '#f5c98b';  // skin tone
-        ctx.fillRect(sx - 3, sy - 17, 6, 6);
-
-        // Legs (alternate stride)
-        ctx.fillStyle = '#333';
-        ctx.fillRect(sx - 3,              sy - 3, 3, 6 + legSwing);   // left leg
-        ctx.fillRect(sx,                  sy - 3, 3, 6 - legSwing);   // right leg
-
-        // Arms
-        ctx.fillStyle = person.color;
-        ctx.fillRect(sx - 7, sy - 9, 3, 5);  // left arm
-        ctx.fillRect(sx + 4, sy - 9, 3, 5);  // right arm
-
-        ctx.globalAlpha = 1;
-    }
-
     drawTrack(ctx, groundY, scrollSpeed, candy = false) {
         const offset = (this.cameraX * scrollSpeed) % 24;
         ctx.fillStyle = this.trackColors(candy).tie;
@@ -2631,13 +2911,13 @@ class TrainGame {
     }
 
     drawResult(ctx) {
-        const { result, endTime } = this.gameState;
-        // Wait 2.5 s after race ends so the crowd boarding animation plays out first
-        if (!endTime || Date.now() - endTime < 2500) return;
+        const { result } = this.gameState;
+        // Wait until the trains have stopped and the boarding is over (overlayAt, see updateStation)
+        if (!this.overlayAt || Date.now() < this.overlayAt) return;
         const label = result === 'win' ? 'YOU WIN!' : result === 'lose' ? 'YOU LOSE' : 'TIE!';
         const color = result === 'win' ? '#2ecc71'  : result === 'lose' ? '#e74c3c'  : '#f1c40f';
         // Fade in over 0.5 s
-        const fadeAlpha = Math.min((Date.now() - endTime - 2500) / 500, 1);
+        const fadeAlpha = Math.min((Date.now() - this.overlayAt) / 500, 1);
         ctx.fillStyle = `rgba(0,0,0,${0.62 * fadeAlpha})`;
         ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         ctx.globalAlpha = fadeAlpha;
@@ -2781,10 +3061,12 @@ class TrainGame {
         const oppBob  = isCity ? Math.sin(Date.now() / 400) * 2.5 : 0;
         const trainBob = isCity ? Math.sin(Date.now() / 400 + 1) * 2.5 : 0;
 
+        this.drawStations(ctx, 'ground');
         if (elevated) this.drawMountainTrack(ctx, TRACK_BACK);
         else          this.drawTrack(ctx, TRACK_BACK, 0.85, isCandy);
         const opponentSX = this.worldToScreen(this.opponent.worldX);
         const oppY = this.opponent.y + oppBob;
+        this._doors = this.opponent.doorOpen;
         if (elevated) {
             this.drawMountainCarts(ctx, this.opponent, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
             // Pivot on rail contact point (bottom-center of locomotive) using
@@ -2799,6 +3081,7 @@ class TrainGame {
                 OPPONENT_SPRITES.wheels[Math.floor(this.opponent.wheelFrame)],
                 0, 40
             );
+            this.drawLocoDoors(ctx, 0, 0);
             ctx.restore();
         } else {
             this.drawCarts(ctx, opponentSX, oppY, '#3498db', '#2980b9', this.opponent.wheelFrame, isCity);
@@ -2810,7 +3093,9 @@ class TrainGame {
                     opponentSX, oppY + 40
                 );
             }
+            this.drawLocoDoors(ctx, opponentSX, oppY);
         }
+        this.drawCrowdLayer(ctx, 'mid');
 
         // Sahara/mountain/candy foreground props
         if (theme === 'sahara' || theme === 'mountain' || theme === 'candy') {
@@ -2840,6 +3125,7 @@ class TrainGame {
 
         const trainSX         = this.worldToScreen(this.train.worldX);
         const trainY          = this.train.y + trainBob;
+        this._doors           = this.train.doorOpen;
         const activeBoostsNow = this.activeBoostCount();
         if (elevated) {
             this.drawMountainCarts(ctx, this.train, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
@@ -2855,6 +3141,7 @@ class TrainGame {
                 TRAIN_SPRITES.wheels[Math.floor(this.wheelFrame)],
                 0, 40
             );
+            this.drawLocoDoors(ctx, 0, 0);
             ctx.restore();
         } else {
             this.drawCarts(ctx, trainSX, trainY, '#e74c3c', '#3498db', this.wheelFrame, isCity);
@@ -2866,7 +3153,10 @@ class TrainGame {
                     trainSX, trainY + 40
                 );
             }
+            this.drawLocoDoors(ctx, trainSX, trainY);
         }
+        this.drawCrowdLayer(ctx, 'front');
+        this.drawStations(ctx, 'over');
 
         // ── Tunnel overlay (city only) ───────────────────────────────────────
         if (theme === 'city') {
@@ -2923,6 +3213,7 @@ class TrainGame {
         }
 
         if (mech && mech.drawZones) mech.drawZones(ctx, this.mechState, this, 'ground');
+        this.drawStations(ctx, 'ground');
 
         if (elevated) this.drawMountainTrack(ctx, TRACK_BACK);
         else          this.drawTrack(ctx, TRACK_BACK, 0.85);
@@ -2931,6 +3222,7 @@ class TrainGame {
         this.drawThemedTrain(ctx, 'opponent', elevated);
         this.drawHazardFx(ctx, 'opponent');
         ctx.globalAlpha = 1;
+        this.drawCrowdLayer(ctx, 'mid');
 
         const rLayer = this.layers.find(l => l.name === 'rocks');
         if (layersDef.rocks) {
@@ -2945,6 +3237,8 @@ class TrainGame {
         this.drawFinishLine(ctx);
         this.drawThemedTrain(ctx, 'player', elevated);
         this.drawHazardFx(ctx, 'player');
+        this.drawCrowdLayer(ctx, 'front');
+        this.drawStations(ctx, 'over');
         if (mech && mech.drawZones) mech.drawZones(ctx, this.mechState, this, 'over');
 
         if (elevated) ctx.restore();
@@ -2989,6 +3283,7 @@ class TrainGame {
         const flame = opp ? body.boosting : this.activeBoostCount() > 0;
         const sx = this.worldToScreen(body.worldX);
         const marks = this.marks[opp ? 'opponent' : 'player'];
+        this._doors = body.doorOpen;
         if (elevated) {
             this.drawMountainCarts(ctx, body, baseY, stripe, win, wheelFrame, marks);
             ctx.save();
@@ -2998,6 +3293,7 @@ class TrainGame {
             if (flame) this.drawFlame(ctx, 0, 44);
             this.renderer.renderSprite(sprites.idle[0], 0, 0);
             this.renderer.renderSprite(sprites.wheels[Math.floor(wheelFrame)], 0, 40);
+            this.drawLocoDoors(ctx, 0, 0);
             this.drawMarksFor(ctx, marks, 0, 0, 0);
             ctx.restore();
         } else {
@@ -3006,6 +3302,7 @@ class TrainGame {
             if (flame) this.drawFlame(ctx, sx, y + 44);
             this.renderer.renderSprite(sprites.idle[0], sx, y);
             this.renderer.renderSprite(sprites.wheels[Math.floor(wheelFrame)], sx, y + 40);
+            this.drawLocoDoors(ctx, sx, y);
             this.drawMarksFor(ctx, marks, 0, sx, y);
         }
     }
@@ -3040,8 +3337,35 @@ class TrainGame {
         const ctx   = this.renderer.ctx;
         const W     = this.canvas.width, H = this.canvas.height;
 
-        if (this.def) this.drawThemedWorld(ctx);
-        else          this.drawLegacyWorld(ctx);
+        const z = this.zoom;
+        if (z < 0.995) {
+            // Zoomed out at the end station: draw the world into a bigger offscreen canvas (so
+            // every `canvas.width` the scenery code reads covers the wider view) and shrink it
+            // onto the screen, anchored on the rails. The sky's top row is stretched upward to
+            // fill the extra height above the horizon.
+            const Wz = Math.round(W / z), Hz = Math.round(H / z), dy = Math.round(STATION_ANCHOR_Y * (1 / z - 1));
+            const off = this._zoomCanvas || (this._zoomCanvas = document.createElement('canvas'));
+            if (off.width !== Wz || off.height !== Hz) { off.width = Wz; off.height = Hz; }
+            const octx = off.getContext('2d');
+            const mainCanvas = this.canvas;
+            this.canvas = off;
+            this.renderer.ctx = octx;
+            octx.save();
+            octx.translate(0, dy);
+            try {
+                if (this.def) this.drawThemedWorld(octx);
+                else          this.drawLegacyWorld(octx);
+            } finally {
+                octx.restore();
+                this.canvas = mainCanvas;
+                this.renderer.ctx = ctx;
+            }
+            octx.drawImage(off, 0, dy, Wz, 1, 0, 0, Wz, dy);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(off, 0, 0, Wz, Hz, 0, 0, W, H);
+        } else if (this.def) this.drawThemedWorld(ctx);
+        else                 this.drawLegacyWorld(ctx);
 
         // ── Result overlay (delayed 2.5 s, fades in) ────────────────────────
         if (this.gameState.result) this.drawResult(ctx);
@@ -3059,9 +3383,6 @@ class TrainGame {
             ctx.textAlign = 'left';
         }
 
-        // ── Crowd boarding — drawn on TOP of result overlay ──────────────────
-        for (const p of this.crowd) this.drawCrowdPerson(ctx, p);
-
         // ── HUD ─────────────────────────────────────────────────────────────
         this.drawLevelBanner(ctx);
         this.drawMinimap(ctx);
@@ -3070,7 +3391,7 @@ class TrainGame {
         document.getElementById('speed').textContent =
             Math.round(this.train.vx * 10) / 10 + (activeBoosts > 0 ? ` 🔥+${boostPct}%` : '');
         document.getElementById('distance').textContent =
-            `${Math.round(this.gameState.distance)} / ${this.finishLineWorldX}`;
+            `${Math.min(Math.round(this.gameState.distance), this.finishLineWorldX)} / ${this.finishLineWorldX}`;
     }
 
     gameLoop = () => {

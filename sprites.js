@@ -39,6 +39,53 @@ const TRAIN_RIG = {
 // Derived anchors (screen px from the car's left edge): centre of each wheel.
 TRAIN_RIG.wheelX = TRAIN_RIG.wheelCols.map(c => (c + 0.5) * TRAIN_RIG.px);
 
+// Doors. Each bay is a pair of sliding leaves over a lit interior. A design supplies this block
+// (bay columns/widths and the rows the opening spans); `drawDoors` then animates it, or a design
+// can replace `drawDoors` outright with its own art (e.g. swing-out doors or a boarding ramp).
+// open runs 0 (shut) .. 1 (fully open). Positions are art columns/rows in the 40 x 16 grid.
+TRAIN_RIG.doors = {
+    cols: [3, 9, 15, 21, 27, 33],     // left art column of each bay
+    widths: [5, 5, 5, 5, 5, 4],       // bay width in art px
+    rowTop: 4, rowBottom: 9,          // opening spans art rows [rowTop, rowBottom)
+    leaf: '#4a4f58', leafEdge: '#8d949e', interior: '#262b38', light: '#ffe2a0',
+};
+// Screen x of each bay's centre, from the car's left edge (where passengers aim for).
+TRAIN_RIG.doorX = TRAIN_RIG.doors.cols.map((c, i) => (c + TRAIN_RIG.doors.widths[i] / 2) * TRAIN_RIG.px);
+// Screen y (from the car's top) of the doorway floor, where passengers step in.
+TRAIN_RIG.doorFloorY = TRAIN_RIG.doors.rowBottom * TRAIN_RIG.px;
+
+// Default door animation: draw one car's doors at (x, y) = car top-left. A fully shut door is
+// left to the base art, so nothing is drawn at open === 0.
+TRAIN_RIG.drawDoors = function (ctx, x, y, open) {
+    if (open <= 0.01) return;
+    const d = TRAIN_RIG.doors, px = TRAIN_RIG.px;
+    const top = y + d.rowTop * px, h = (d.rowBottom - d.rowTop) * px;
+    for (let i = 0; i < d.cols.length; i++) {
+        const bx = x + d.cols[i] * px, bw = d.widths[i] * px;
+        const gap = bw * open;                               // opening width, from the bay's centre
+        const gx = bx + (bw - gap) / 2;
+        const leafW = (bw - gap) / 2;
+        // Dark interior with a warm light strip and the far wall's seat line.
+        ctx.fillStyle = d.interior;
+        ctx.fillRect(gx, top, gap, h);
+        ctx.fillStyle = d.light;
+        ctx.globalAlpha = 0.85 * open;
+        ctx.fillRect(gx, top, gap, 2);
+        ctx.globalAlpha = 0.25 * open;
+        ctx.fillRect(gx, top + h * 0.55, gap, 2);
+        ctx.globalAlpha = 1;
+        // Leaves parked at each side of the opening.
+        ctx.fillStyle = d.leaf;
+        ctx.fillRect(bx, top, leafW, h);
+        ctx.fillRect(bx + bw - leafW, top, leafW, h);
+        ctx.fillStyle = d.leafEdge;
+        if (leafW > 1) {
+            ctx.fillRect(bx + leafW - 1, top, 1, h);
+            ctx.fillRect(bx + bw - leafW, top, 1, h);
+        }
+    }
+};
+
 const WHEEL_CENTERS = TRAIN_RIG.wheelCols;
 function makeWheelFrames() {
     const frame = (hubRow) => {
