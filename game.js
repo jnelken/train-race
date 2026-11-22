@@ -248,27 +248,82 @@ function getCandyPhysicsSlope(worldX, wave) {
     return visual * (CANDY_PHYSICS_AMP / Math.max(primaryAmp, 1));
 }
 
-// ─── Sahara / valley: a few tiny gaussian bumps per race ───────────────────
+// ─── Rolling ridges: Sahara and every registry level that borrows its terrain ─
+// A ridge is a rise, a short crest and a fall, each face eased with a smootherstep so
+// the rails never kink. A face's steepest point is height × 1.875 / width, so the
+// generator picks the ANGLE it wants (anywhere up to HILL_MAX_DEG, near-vertical) and
+// derives the width from it. The height lives in `amp`, so levels can still scale it
+// (`{...h, amp: h.amp * k}`); that steepens the faces by the same factor, which the
+// angle range leaves room for. Gaussian bumps ({center, sigma, amp}) still work too.
+const HILL_MIN_DEG   = 28;    // gentlest face a ridge can have
+const HILL_MAX_DEG   = 85;    // hard ceiling on any face's steepest point, near-vertical
+const HILL_WALL_DEG  = [72, 82];   // every course gets one face in this band
+const HILL_HEIGHT    = [120, 240]; // ridge heights (px)
+const HILL_START_MARGIN = 700;     // keeps the start station flat
+const HILL_END_MARGIN   = 800;     // keeps the finish station and braking run flat
+const HILL_MIN_GAP      = 140;
+
+function smootherstep(t)      { return t * t * t * (t * (t * 6 - 15) + 10); }
+function smootherstepSlope(t) { const u = t * (1 - t); return 30 * u * u; }
+
 function makeSaharaHills(finishLineWorldX) {
-    const count = 4 + Math.floor(Math.random() * 3); // 4–6 big rolling hills
-    const hills = [];
-    const margin = 800;
-    const span = Math.max(finishLineWorldX - margin * 2, 1000);
+    const faceWidth = (h, deg) => 1.875 * h / Math.tan(deg * Math.PI / 180);
+    // Most faces are mid-range; the steep end is rarer.
+    const faceAngle = () => HILL_MIN_DEG + (HILL_WALL_DEG[1] - HILL_MIN_DEG) * Math.pow(Math.random(), 1.3);
+    const ridges = [];
+    const count = 4 + Math.floor(Math.random() * 3);    // 4–6 ridges
     for (let i = 0; i < count; i++) {
-        const t = (i + 0.35 + Math.random() * 0.3) / count;
-        hills.push({
-            center: margin + t * span + (Math.random() - 0.5) * 200,
-            sigma:  230 + Math.random() * 150,   // 230–380 wide
-            amp:    48 + Math.random() * 48,     // 48–96 tall: climbs of ~10–15°, readable on a wide screen
+        ridges.push({
+            type: 'ridge',
+            amp: HILL_HEIGHT[0] + Math.random() * (HILL_HEIGHT[1] - HILL_HEIGHT[0]),
+            riseDeg: faceAngle(), fallDeg: faceAngle(),
+            top: Math.random() * 200,                    // flat crest between the faces
         });
     }
-    return hills;
+    const wall = ridges[Math.floor(Math.random() * ridges.length)];
+    wall[Math.random() < 0.5 ? 'riseDeg' : 'fallDeg'] =
+        HILL_WALL_DEG[0] + Math.random() * (HILL_WALL_DEG[1] - HILL_WALL_DEG[0]);
+    for (const r of ridges) {
+        r.riseW = faceWidth(r.amp, r.riseDeg);
+        r.fallW = faceWidth(r.amp, r.fallDeg);
+        r.len = r.riseW + r.top + r.fallW;
+    }
+    const avail = Math.max(finishLineWorldX - HILL_START_MARGIN - HILL_END_MARGIN, 1000);
+    const used = () => ridges.reduce((s, r) => s + r.len, 0) + HILL_MIN_GAP * (ridges.length - 1);
+    while (ridges.length > 1 && used() > avail) ridges.pop();   // gentle, wide ridges can crowd a short course
+
+    // Spread the leftover flat ground randomly: before, between and after the ridges.
+    const n = ridges.length;
+    const extra = Math.max(0, avail - used());
+    const wts = Array.from({ length: n + 1 }, () => 0.3 + Math.random());
+    const wsum = wts.reduce((s, w) => s + w, 0);
+    let x = HILL_START_MARGIN + extra * wts[0] / wsum;
+    ridges.forEach((r, i) => {
+        r.a = x;                                         // the rise starts here
+        x += r.len + HILL_MIN_GAP + extra * wts[i + 1] / wsum;
+    });
+    return ridges;
+}
+
+// Steepest face angle (degrees) of a hill list, for tests and tuning.
+function maxHillDegrees(hills, finishLineWorldX) {
+    let s = 0;
+    for (let x = 0; x <= finishLineWorldX; x += 4) s = Math.max(s, Math.abs(getBumpSlope(x, hills)));
+    return Math.atan(s) * 180 / Math.PI;
 }
 
 function getBumpElevation(worldX, hills) {
     if (!hills || hills.length === 0) return 0;
     let elev = 0;
     for (const h of hills) {
+        if (h.type === 'ridge') {
+            const t = worldX - h.a;
+            if (t <= 0) continue;
+            if (t < h.riseW) elev += h.amp * smootherstep(t / h.riseW);
+            else if (t < h.riseW + h.top) elev += h.amp;
+            else if (t < h.len) elev += h.amp * (1 - smootherstep((t - h.riseW - h.top) / h.fallW));
+            continue;
+        }
         const dx = worldX - h.center;
         elev += h.amp * Math.exp(-(dx * dx) / (2 * h.sigma * h.sigma));
     }
@@ -279,6 +334,15 @@ function getBumpSlope(worldX, hills) {
     if (!hills || hills.length === 0) return 0;
     let slope = 0;
     for (const h of hills) {
+        if (h.type === 'ridge') {
+            const t = worldX - h.a;
+            if (t <= 0) continue;
+            if (t < h.riseW) slope += h.amp * smootherstepSlope(t / h.riseW) / h.riseW;
+            else if (t >= h.riseW + h.top && t < h.len) {
+                slope -= h.amp * smootherstepSlope((t - h.riseW - h.top) / h.fallW) / h.fallW;
+            }
+            continue;
+        }
         const dx = worldX - h.center;
         const elev = h.amp * Math.exp(-(dx * dx) / (2 * h.sigma * h.sigma));
         slope += -elev * dx / (h.sigma * h.sigma);
@@ -1056,7 +1120,11 @@ class TrainGame {
         }
         // A faster world needs a stiffer camera, or the train drifts off-center by the same factor.
         this.cameraX += (target - this.cameraX) * Math.min(0.5, CAMERA_LERP * this.speedScale());
-        this.cameraY += (this.train.elev - this.cameraY) * CAMERA_LERP;
+        // Near-vertical faces lift the train faster than a gentle follow can track, so the
+        // vertical lerp stiffens past a 45° grade (the mountain and candy never reach it).
+        const grade = Math.abs(this.getSlope(this.train.worldX + TRAIN_WIDTH / 2));
+        const lerpY = Math.min(0.5, CAMERA_LERP * (1 + 1.5 * Math.max(0, grade - 1)));
+        this.cameraY += (this.train.elev - this.cameraY) * lerpY;
         this.zoom += (zoomTarget - this.zoom) * 0.03;
         if (Math.abs(this.zoom - zoomTarget) < 0.002) this.zoom = zoomTarget;
     }

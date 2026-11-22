@@ -46,7 +46,7 @@ registerTheme({
     ground: [[0, '#f6fbff'], [0.2, '#dcecf8'], [1, '#a6c3da']],
     track: { tie: '#56677a', rail: '#d6ecfa' },
 
-    // Gentle snow drifts.
+    // Snow ridges: the shared ridge terrain, a touch lower than the rest.
     terrain(finishX) {
         const hills = makeSaharaHills(finishX).map(h => ({ ...h, amp: h.amp * 0.8 }));
         return {
