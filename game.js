@@ -1101,10 +1101,9 @@ class TrainGame {
                 p.x += Math.sign(dx) * Math.min(Math.abs(dx), step);
                 if (Math.abs(dx) <= step) p.state = 'enter';
             } else if (p.state === 'enter') {
-                // Step through the doorway: the deck is flush with the floor, so they just walk in.
-                p.enter = Math.min(1, p.enter + dt / 0.55);
-                p.fy = p.standY - p.enter * 7;
-                p.scale = 1 - 0.28 * p.enter;
+                // Step through the doorway: the deck is flush with the floor, so they walk straight
+                // in at the same height and fade out inside the carriage (no climb).
+                p.enter = Math.min(1, p.enter + dt / 0.45);
                 p.alpha = 1 - p.enter * p.enter;
                 if (p.enter >= 1) p.state = 'done';
             }
@@ -1142,8 +1141,7 @@ class TrainGame {
         }
         doors.sort((a, b) => Math.abs(a - p.x) - Math.abs(b - p.x));
         p.doorX = doors.length ? doors[Math.floor(Math.random() * Math.min(3, doors.length))] : p.x;
-        p.standY = this.platformEdgeY(p.lane) + 4;   // walk along the deck right up to the door
-        p.fy = p.standY;
+        // They keep their own spot on the deck and walk straight along it to the door.
     }
 
     // ── Station drawing ─────────────────────────────────────────────────────
@@ -1285,8 +1283,22 @@ class TrainGame {
     drawCrowdLayer(ctx, layer) {
         if (!this.crowd || !this.crowd.length) return;
         for (const p of this.crowd) {
-            if ((p.lane === 'back' ? 'mid' : 'front') === layer) this.drawPerson(ctx, p);
+            if ((p.lane === 'back' ? 'mid' : 'front') !== layer) continue;
+            // The rival's platform lies behind the player's train: anyone it covers is simply hidden
+            // (never a head poking over the roof).
+            if (p.lane === 'back' && this.frontTrainCovers(p.x)) continue;
+            this.drawPerson(ctx, p);
         }
+    }
+
+    // True when one of the player's cars hides world x (same left-edge coordinate as train.worldX).
+    frontTrainCovers(x) {
+        const T = this.train;
+        if (x > T.worldX - 6 && x < T.worldX + TRAIN_WIDTH + 6) return true;
+        for (const c of T.carts) {
+            if (c && c.centerX !== 0 && Math.abs(x - c.centerX) <= TRAIN_WIDTH / 2 + 6) return true;
+        }
+        return false;
     }
 
     drawPerson(ctx, p) {
