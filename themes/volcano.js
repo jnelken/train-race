@@ -24,7 +24,7 @@ registerTheme({
     },
 
     terrain(finishX) {
-        return hillTerrain(finishX, { maxHeight: 900, rolliness: 0.25 });
+        return hillTerrain(finishX, { maxHeight: 1800, rolliness: 0.25 });
     },
 
     // Glowing lava cracks in the rock.

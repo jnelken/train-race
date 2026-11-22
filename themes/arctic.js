@@ -48,7 +48,7 @@ registerTheme({
 
     // Snow ridges: the shared ridge terrain, a touch lower than the rest.
     terrain(finishX) {
-        return hillTerrain(finishX, { maxHeight: 450, rolliness: 0.5 });
+        return hillTerrain(finishX, { maxHeight: 900, rolliness: 0.5 });
     },
 
     layers: {

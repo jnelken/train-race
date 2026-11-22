@@ -109,8 +109,10 @@ registerTheme({
     drawSky(ctx, game, W, H) {
         const t = Date.now() / 1000, wind = thunderWind(game).w;
         for (let i = 0; i < 6; i++) {
-            const speed = 6 + i * 2 + wind * 40;
-            const cx = ((ThemeKit.hash(i + 2) * (W + 500) - game.cameraX * 0.05 - t * speed) % (W + 500) + W + 500) % (W + 500) - 250;
+            // The drift is an integral of the speed, so the clouds glide faster as the gust builds
+            // instead of jumping (speed changes, t * speed would not).
+            const drift = ThemeKit.phase(game, 'cloud' + i, 6 + i * 2 + wind * 70);
+            const cx = ((ThemeKit.hash(i + 2) * (W + 500) - game.cameraX * 0.05 - drift) % (W + 500) + W + 500) % (W + 500) - 250;
             const cy = 38 + (i % 3) * 30, sc = 0.85 + ThemeKit.hash(i + 9) * 0.7;
             ctx.fillStyle = '#2b3547';                       // dark underside
             ctx.beginPath();
@@ -155,7 +157,7 @@ registerTheme({
     },
 
     terrain(finishX) {
-        return hillTerrain(finishX, { maxHeight: 420, rolliness: 0.8 });
+        return hillTerrain(finishX, { maxHeight: 840, rolliness: 0.8 });
     },
 
     layers: {
@@ -203,7 +205,7 @@ registerTheme({
                         ctx.moveTo(sx + 8 - i * 1.6, y); ctx.lineTo(sx - 8 + i * 1.6, y - 8);
                     }
                     ctx.stroke();
-                    const ang = t * (0.8 + wind * 7) + obj.seed;
+                    const ang = ThemeKit.phase(game, 'blades', 0.8 + wind * 7) + obj.seed;
                     ctx.fillStyle = '#d9d2c3';
                     for (let b = 0; b < 8; b++) {
                         const a = ang + (b * Math.PI) / 4;
@@ -302,13 +304,14 @@ registerTheme({
         ctx.lineCap = 'round';
         // Rain: light always, slanting harder (and denser) as the gale builds.
         const n = Math.floor(70 + wind * 90);
+        const rainX = ThemeKit.phase(game, 'rainx', 140 + wind * 520), rainY = ThemeKit.phase(game, 'rainy', 440 + wind * 260);
         ctx.lineWidth = 1;
         ctx.strokeStyle = `rgba(200,220,240,${0.3 + 0.25 * wind})`;
         ctx.beginPath();
         for (let i = 0; i < n; i++) {
             const slant = 5 + wind * 26;
-            const x = ((ThemeKit.hash(i) * (W + 200) - game.cameraX * 0.8 - t * (140 + wind * 520)) % (W + 200) + W + 200) % (W + 200) - 60;
-            const y = ((ThemeKit.hash(i + 17) * H + t * (440 + wind * 260)) % H + H) % H;
+            const x = ((ThemeKit.hash(i) * (W + 200) - game.cameraX * 0.8 - rainX) % (W + 200) + W + 200) % (W + 200) - 60;
+            const y = ((ThemeKit.hash(i + 17) * H + rainY) % H + H) % H;
             ctx.moveTo(x, y);
             ctx.lineTo(x - slant, y + 16);
         }

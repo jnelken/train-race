@@ -104,6 +104,19 @@ const ThemeKit = {
         return true;
     },
 
+    // A phase (position, angle) that advances at a rate which may change over time. NEVER write
+    // `Date.now() / 1000 * rate` when `rate` varies: that clock is ~1.8e9, so a rate change of 0.001
+    // shifts the result by millions and the animation scrambles. This integrates rate * dt instead.
+    // `key` names the phase (one per thing that moves independently); calling it again in the same
+    // frame returns the same value. Drive drifting clouds, spinning blades, rain streaks with it.
+    phase(game, key, rate) {
+        const now = Date.now() / 1000, all = game._phases || (game._phases = {});
+        const p = all[key] || (all[key] = { v: 0, last: now });
+        p.v += rate * Math.min(0.1, Math.max(0, now - p.last));
+        p.last = now;
+        return p.v;
+    },
+
     // Smooth 0..1..0 pulse for time-cycled zones: `warn` seconds of telegraph, then
     // `active` seconds on, repeating every `period`. Returns { phase, t } where phase
     // is 'idle' | 'warn' | 'active' and t is 0..1 progress within that phase.

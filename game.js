@@ -257,7 +257,7 @@ function getCandyPhysicsSlope(worldX, wave) {
 // than HILL_MIN_RADIUS, so the slope only ever changes at a bounded rate (a face can still be
 // near-vertical, but it eases in and out over hundreds of px instead of dropping off a cliff edge).
 // Two knobs shape a course (see makeHills):
-//   maxHeight  the tallest hill's height in px (the other hills are 40-95% of it)
+//   maxHeight  the tallest hill's height in px (the other hills are 25-95% of it)
 //   rolliness  0..1. 0: flat plains with hills interspersed, steep as the radius and height allow.
 //              1: the hills take up the whole course with no flat plains, valleys that sit above the
 //              start level, and faces wide enough to be a smooth S-curve with no straight part.
@@ -269,8 +269,8 @@ const HILL_MIN_RADIUS   = 520;        // px: the tightest bend in any hill
 const HILL_MAX_DEG      = 85;         // hard ceiling on a face's angle, near-vertical
 const HILL_START_MARGIN = 700;        // keeps the start station flat
 const HILL_END_MARGIN   = 800;        // keeps the finish station and braking run flat
-const HILL_DEFAULTS     = { maxHeight: 560, rolliness: 0.35 };
-const SAHARA_HILLS      = { maxHeight: 480, rolliness: 0.6 };   // rolling dunes
+const HILL_DEFAULTS     = { maxHeight: 1120, rolliness: 0.35 };
+const SAHARA_HILLS      = { maxHeight: 960, rolliness: 0.6 };    // rolling dunes
 
 // One face of rise `dh` over run `dx`, with bends no tighter than R: { R, ang, len, dx }. `ang` is the
 // face's steepest angle in radians, `len` its straight stretch, `dx` the run it actually takes (a face
@@ -297,11 +297,11 @@ function makeHills(finishLineWorldX, opts = {}) {
     const R = HILL_MIN_RADIUS;
     const avail = Math.max(finishLineWorldX - HILL_START_MARGIN - HILL_END_MARGIN, 1000);
     const coverage = 0.3 + 0.7 * rolliness;                  // share of the course the faces take up
-    const n = 4 + Math.floor(Math.random() * 3) + Math.round(rolliness * 3);   // 4-6 hills, up to 7-9
+    const n = 2 + Math.floor(Math.random() * 2) + Math.round(rolliness * 1.5);  // 2-3 big hills, up to 4-5 when rolling
 
     // Peaks, and valley floors between them (the course starts and ends at 0).
     const tall = Math.floor(Math.random() * n);
-    const peaks = Array.from({ length: n }, (_, i) => maxHeight * (i === tall ? 1 : 0.4 + 0.55 * Math.random()));
+    const peaks = Array.from({ length: n }, (_, i) => maxHeight * (i === tall ? 1 : 0.25 + 0.7 * Math.random()));
     const floors = Array.from({ length: n + 1 }, (_, i) =>
         (i === 0 || i === n) ? 0 : rolliness * Math.random() * 0.4 * Math.min(peaks[i - 1], peaks[i]));
     const faceWts = Array.from({ length: 2 * n }, () => 0.5 + Math.random());   // random run per unit of height
