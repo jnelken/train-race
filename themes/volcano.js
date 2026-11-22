@@ -158,6 +158,8 @@ registerTheme({
 
     mechanic: {
         marks: { kind: 'lava', trigger: 'penalty', rate: 0.16, r: [4, 9], y: [8, 40], hot: 7, perPart: 16 },
+        // A car caught on a blowing vent throws sparks off its wheels.
+        fx: { kind: 'ember', trigger: 'penalty', rate: 0.55, n: 2, r: [1.5, 3], vx: [-3, 0.5], vy: [3, 7], g: 0.28, life: [0.4, 0.9], inherit: 0.8 },
         init(game) {
             const count = Math.max(6, Math.round(game.finishLineWorldX / 1800));
             const zones = ThemeKit.placeZones(game, { count, lenMin: 190, lenMax: 240, margin: 1400, gap: 350 });
@@ -227,8 +229,69 @@ registerTheme({
                             ctx.fillRect(sx + a * 90, baseY - h * ThemeKit.hash(i * 5 + 2) - 10, 3, 3);
                         }
                     }
+                    this.drawVentSmoke(ctx, sx, baseY, p, clock);
+                    this.drawVentGobs(ctx, game, z, t, baseY);
                 }
             }
+        },
+
+        // Smoke curling off a vent: faint while it sleeps, thick as the blast nears.
+        drawVentSmoke(ctx, sx, baseY, p, clock) {
+            const heat = p.phase === 'warn' ? 0.5 + 0.5 * p.t : p.phase === 'idle' ? 0.35 : 0;
+            if (heat <= 0) return;
+            for (let i = 0; i < 6; i++) {
+                const q = (clock * 0.45 + i / 6) % 1;
+                ctx.fillStyle = `rgba(62,48,50,${0.42 * (1 - q) * heat})`;
+                ctx.beginPath();
+                ctx.arc(sx + Math.sin(q * 5 + i * 2.1) * 7 * (1 + q), baseY - 4 - q * 72 * heat, 5 + q * 12, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        },
+
+        // Gobs of lava thrown up when a vent blows. Each follows a ballistic arc (same cycle
+        // for both trains), glows as it flies, and splats on the ground where it lands.
+        drawVentGobs(ctx, game, z, t, baseY) {
+            const c = (((t + z.offset) % VOLCANO_PERIOD) + VOLCANO_PERIOD) % VOLCANO_PERIOD;
+            const blastAt = VOLCANO_PERIOD - VOLCANO_BLAST;
+            const since = c >= blastAt ? c - blastAt : c + VOLCANO_BLAST;
+            if (since > VOLCANO_BLAST + 2.2) return;
+            const cycle = Math.floor((t + z.offset) / VOLCANO_PERIOD) - (c >= blastAt ? 0 : 1);
+            const cx = (z.x0 + z.x1) / 2;
+            for (let i = 0; i < 14; i++) {
+                const h = (k) => ThemeKit.hash(cycle * 31 + z.x0 * 0.01 + i * 5.3 + k);
+                const f = (since - h(3) * 0.6) * 60;          // frames since this gob left the vent
+                if (f < 0) continue;
+                const ang = (h(1) - 0.5) * 1.5, v = 6 + h(2) * 6.5, g = 0.3;
+                const x = cx + Math.sin(ang) * v * f, up = Math.cos(ang) * v * f - 0.5 * g * f * f;
+                const sx = ThemeKit.sx(game, x), r = 2.5 + h(4) * 2.5;
+                if (up < 0) {                                  // landed: a cooling splat
+                    const age = (f - 2 * Math.cos(ang) * v / g) / 60;
+                    if (age > 0.9) continue;
+                    ctx.fillStyle = `rgba(255,${Math.round(120 + 80 * (1 - age))},30,${0.8 * (1 - age / 0.9)})`;
+                    ctx.beginPath();
+                    ctx.ellipse(sx, baseY - game.getElevation(x) + 2, r * 1.8, r * 0.6, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    continue;
+                }
+                const y = baseY - game.getElevation(x) - up;
+                const vy = Math.cos(ang) * v - g * f, vx = Math.sin(ang) * v;
+                ctx.strokeStyle = 'rgba(255,120,30,0.55)';
+                ctx.lineWidth = r;
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(sx, y);
+                ctx.lineTo(sx - vx * 2.4, y + vy * 2.4);
+                ctx.stroke();
+                ctx.fillStyle = '#ff9a2a';
+                ctx.beginPath();
+                ctx.arc(sx, y, r, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#ffe9a0';
+                ctx.beginPath();
+                ctx.arc(sx - r * 0.2, y - r * 0.2, r * 0.45, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.lineCap = 'butt';
         },
 
         minimapMarks(state) {

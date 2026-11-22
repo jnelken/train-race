@@ -25,6 +25,8 @@
 //                                               boost taps partly relieve for the player.
 //   drawZones(ctx, state, game, pass)        pass is 'ground' (under trains) or 'over'
 //   minimapMarks(state, game)                -> [{ x0, x1, color }] static zones for the minimap
+//   fx                                       spec | [spec, ...] hazard particles on the trains
+//                                               (spray, sparks, bubbles; see updateFx in game.js)
 //   opponentAlpha(state, game)               -> 0..1 opacity of the opponent (fog)
 //   hideOpponentOnMinimap                    true to hide the opponent marker
 const THEME_DEFS = {};
@@ -103,6 +105,31 @@ const ThemeKit = {
         if (c < idle) return { phase: 'idle', t: c / Math.max(idle, 1e-6) };
         if (c < idle + warn) return { phase: 'warn', t: (c - idle) / warn };
         return { phase: 'active', t: (c - idle - warn) / active };
+    },
+
+    // Call cb(who, train, part, cx) for the locomotive (part 0) and every cart of both
+    // trains; cx is the car's centre in train-center world coordinates. Points on a car
+    // come from TRAIN_RIG (sprites.js): left edge = cx - TRAIN_WIDTH / 2, wheels at
+    // left + TRAIN_RIG.wheelX[i]. Never hard-code pixels, so train art can be swapped.
+    eachCar(game, cb) {
+        for (const who of ['player', 'opponent']) {
+            const train = who === 'player' ? game.train : game.opponent;
+            for (let part = 0; part <= CART_COUNT; part++) {
+                let cx;
+                if (part === 0) cx = train.worldX + TRAIN_WIDTH / 2;
+                else {
+                    const cart = train.carts[part - 1];
+                    if (!cart || cart.centerX === 0) continue;
+                    cx = cart.centerX;
+                }
+                cb(who, train, part, cx);
+            }
+        }
+    },
+
+    // Ground y of a train's rail contact at world x (matches how the trains are drawn).
+    railY(game, who, x) {
+        return (who === 'opponent' ? TRACK_BACK : TRACK_FRONT) - game.getElevation(x);
     },
 };
 
@@ -215,6 +242,108 @@ ThemeKit.marks = {
         ctx.fillStyle = 'rgba(40,45,60,0.55)';
         ctx.beginPath();
         ctx.arc(x, y, m.r * 0.22, 0, Math.PI * 2);
+        ctx.fill();
+    },
+};
+
+// ── Hazard particle renderers ──────────────────────────────────────────────
+// A level's mechanic.fx spawns these (see updateFx in game.js). Each draws one particle at
+// (x, y) on screen; p.r is its size, k is 0..1 through its life, p.landed marks a splat on
+// the ground (p.age - p.landedAt seconds ago). Add a kind here and name it in mechanic.fx.
+ThemeKit.fx = {
+    // Flung mud: a dark clod that flattens into a splat where it lands.
+    mud(ctx, p, x, y, k) {
+        if (p.landed) {
+            ctx.globalAlpha = Math.max(0, 1 - (p.age - p.landedAt) / 0.45) * 0.85;
+            ctx.fillStyle = '#5b3d22';
+            ctx.beginPath();
+            ctx.ellipse(x, y + 1, p.r * 1.7, p.r * 0.55, 0, 0, Math.PI * 2);
+            ctx.fill();
+            return;
+        }
+        ctx.fillStyle = ThemeKit.hash(p.seed) > 0.5 ? '#5b3d22' : '#7a5632';
+        ctx.beginPath();
+        ctx.arc(x, y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,230,190,0.3)';
+        ctx.fillRect(x - p.r * 0.4, y - p.r * 0.55, p.r * 0.5, 1.2);
+    },
+
+    // Twinkling ice shard.
+    ice(ctx, p, x, y, k) {
+        ctx.globalAlpha = (1 - k) * (0.55 + 0.45 * Math.sin(p.age * 30 + p.seed));
+        ctx.fillStyle = ThemeKit.hash(p.seed) > 0.5 ? '#f4fbff' : '#bfe6ff';
+        ctx.beginPath();
+        ctx.moveTo(x, y - p.r);
+        ctx.lineTo(x + p.r * 0.6, y);
+        ctx.lineTo(x, y + p.r);
+        ctx.lineTo(x - p.r * 0.6, y);
+        ctx.closePath();
+        ctx.fill();
+    },
+
+    // Soft puff of powder / spray that swells and fades.
+    powder(ctx, p, x, y, k) {
+        ctx.globalAlpha = 0.38 * (1 - k);
+        ctx.fillStyle = p.style.color || '#ffffff';
+        ctx.beginPath();
+        ctx.arc(x, y, p.r * (1 + k * 2.2), 0, Math.PI * 2);
+        ctx.fill();
+    },
+
+    // Hot spark with a short tail along its velocity.
+    ember(ctx, p, x, y, k) {
+        ctx.globalAlpha = 1 - k * 0.8;
+        ctx.strokeStyle = k < 0.45 ? '#ffd36a' : '#ff7a1a';
+        ctx.lineWidth = Math.max(1.2, p.r * 0.6);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - p.vx * 1.6, y + p.vy * 1.6);
+        ctx.stroke();
+    },
+
+    // Rising bubble that wobbles as it goes.
+    bubble(ctx, p, x, y, k) {
+        ctx.globalAlpha = 1 - k * k;
+        const bx = x + Math.sin(p.age * 6 + p.seed) * 1.6;
+        ctx.strokeStyle = 'rgba(225,248,255,0.8)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(bx, y, p.r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.fillRect(bx - p.r * 0.45, y - p.r * 0.5, 1.5, 1.5);
+    },
+
+    // Loose bits drifting weightlessly: bolts, sparkles and chips, tumbling slowly.
+    float(ctx, p, x, y, k) {
+        const h = (i) => ThemeKit.hash(p.seed + i);
+        ctx.globalAlpha = Math.min(1, (1 - k) * 3, k * 8);
+        ctx.translate(x, y);
+        ctx.rotate(p.age * (1 + h(1) * 2.5) * (h(2) > 0.5 ? 1 : -1));
+        const v = Math.floor(h(3) * 3);
+        if (v === 0) {                       // bolt
+            ctx.fillStyle = '#b9c2da';
+            ctx.fillRect(-p.r, -p.r * 0.45, p.r * 2, p.r * 0.9);
+            ctx.fillStyle = '#6f7a99';
+            ctx.fillRect(p.r * 0.4, -p.r * 0.45, p.r * 0.6, p.r * 0.9);
+        } else if (v === 1) {                // sparkle
+            ctx.fillStyle = '#e8f0ff';
+            ctx.fillRect(-p.r, -0.6, p.r * 2, 1.2);
+            ctx.fillRect(-0.6, -p.r, 1.2, p.r * 2);
+        } else {                             // panel chip
+            ctx.fillStyle = '#8a93ad';
+            ctx.fillRect(-p.r * 0.8, -p.r * 0.6, p.r * 1.6, p.r * 1.2);
+        }
+    },
+
+    // Rolling smoke puff.
+    smoke(ctx, p, x, y, k) {
+        ctx.globalAlpha = 0.4 * (1 - k);
+        ctx.fillStyle = p.style.color || '#463c3e';
+        ctx.beginPath();
+        ctx.arc(x, y, p.r * (1 + k * 1.8), 0, Math.PI * 2);
         ctx.fill();
     },
 };

@@ -164,6 +164,8 @@ registerTheme({
 
     mechanic: {
         marks: { kind: 'kelp', trigger: 'any', rate: 0.06, r: [7, 12], y: [10, 34], life: 24, perPart: 6 },
+        // Bubbles stream off the cars: carried along in a tailwind, left rushing behind in a headwind.
+        fx: { kind: 'bubble', trigger: 'any', rate: 0.14, at: 'body', r: [1.5, 3.5], vx: [-0.4, 0.4], vy: [0.6, 1.6], g: -0.012, life: [1, 2], inherit: (k) => (k > 1 ? 1.15 : 0.12) },
         init(game) {
             const count = Math.max(5, Math.round(game.finishLineWorldX / 2300));
             const zones = ThemeKit.placeZones(game, { count, lenMin: 520, lenMax: 820, margin: 1400, gap: 350 });

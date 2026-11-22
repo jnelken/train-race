@@ -97,6 +97,8 @@ registerTheme({
 
     mechanic: {
         marks: { kind: 'mud', trigger: 'penalty', rate: 0.22, r: [3, 7.5], y: [20, 42], life: 55, perPart: 16 },
+        // Wheels fling clods of mud up and back; they splat on the rails.
+        fx: { kind: 'mud', trigger: 'penalty', rate: 0.7, r: [1.8, 4], vx: [-2.6, -0.3], vy: [2, 5.5], g: 0.3, life: [0.5, 1.4], land: 'splat', inherit: 0.9 },
         init(game) {
             const count = Math.max(4, Math.round(game.finishLineWorldX / 2900));
             return { zones: ThemeKit.placeZones(game, { count, lenMin: 350, lenMax: 600, margin: 1500, gap: 450 }) };
@@ -132,6 +134,20 @@ registerTheme({
                     ctx.stroke();
                 }
             }
+            // Slosh: rings spread out from every wheel that is churning through a pit.
+            ThemeKit.eachCar(game, (who, train, part, cx) => {
+                if (train.vx < 1 || !state.zones.some(z => cx > z.x0 && cx < z.x1)) return;
+                if (Math.abs(cx - game.cameraX) > game.canvas.width / 2 + 120) return;
+                ctx.lineWidth = 1.5;
+                TRAIN_RIG.wheelX.forEach((wx, i) => {
+                    const x = cx - TRAIN_WIDTH / 2 + wx;
+                    const q = (t * 1.7 + part * 0.37 + i * 0.25) % 1;
+                    ctx.strokeStyle = `rgba(200,160,110,${0.7 * (1 - q)})`;
+                    ctx.beginPath();
+                    ctx.ellipse(ThemeKit.sx(game, x), ThemeKit.railY(game, who, x) - 2, 4 + q * 16, 1.5 + q * 5, 0, 0, Math.PI * 2);
+                    ctx.stroke();
+                });
+            });
         },
 
         minimapMarks(state) {

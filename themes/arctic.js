@@ -157,6 +157,11 @@ registerTheme({
 
     mechanic: {
         marks: { kind: 'frost', trigger: 'ambient', rate: 0.02, r: [4, 9], y: [8, 42], life: 30, perPart: 8 },
+        // Ice shards and powder thrown up off the slick rails as the wheels skate along.
+        fx: [
+            { kind: 'ice', trigger: 'ambient', rate: 0.14, r: [1.5, 3], y: [2, 8], vx: [-2.2, 0.2], vy: [1.5, 4], g: 0.18, life: [0.4, 0.8], inherit: 0.85 },
+            { kind: 'powder', trigger: 'ambient', rate: 0.09, r: [2, 4], y: [1, 5], vx: [-1.5, 0], vy: [0.3, 1.2], g: -0.02, life: [0.7, 1.2], inherit: 0.7 },
+        ],
         physics: { inertia: 0.5 },
 
         // The rails gleam: a glossy band across both lanes with drifting glints.

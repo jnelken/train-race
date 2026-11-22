@@ -191,6 +191,8 @@ registerTheme({
 
     mechanic: {
         marks: { kind: 'scratch', trigger: 'ambient', rate: 0.012, r: [6, 12], y: [8, 42], perPart: 10 },
+        // Weightless: bolts, chips and sparkles drift up off the cars and tumble away.
+        fx: { kind: 'float', trigger: 'ambient', rate: 0.05, at: 'body', r: [1.5, 3], vx: [-0.5, 0.3], vy: [0.15, 0.9], g: -0.003, life: [2.5, 4], inherit: 0.95 },
         // Heavy momentum; boost taps last 2 s at +2.5% each (the same total as +5% for 1 s).
         physics: { inertia: 0.6, boostMs: 2000, boostPer: 0.025 },
     },

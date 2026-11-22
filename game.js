@@ -49,6 +49,7 @@ const TRAIN_FALL_GRAVITY = 0.025;  // px/frame² downward acceleration while air
 const TRAIN_ANGLE_LERP   = 0.18;   // per-frame pitch smoothing toward target angle
 const AIRBORNE_MAX_PITCH = 0.55;   // rad (~31°) — pitch clamp during flight
 const CART_COUNT         = 12;     // trailing carts simulated & drawn per train
+const FX_MAX             = 420;    // cap on live hazard particles
 const AXLE_OFFSET        = 56;     // px from a car's center to each wheel contact point
 const OPPONENT_SPEED_STEP    = 0.05;
 const OPPONENT_SPEED_VARIANCE = 0.05;
@@ -553,6 +554,7 @@ class TrainGame {
         }
         this.applyThemePhysics();
         this.marks = { player: [], opponent: [] };   // hazard residue stuck to each train
+        this.fxList = [];                            // live hazard particles (spray, sparks, bubbles)
         this.levelName = this.def ? this.def.name : (LEGACY_THEME_NAMES[this.theme] || this.theme);
         this.levelHint = this.def ? (this.def.hint || '') : '';
 
@@ -697,8 +699,8 @@ class TrainGame {
         if (count >= perPart && oldest >= 0) list.splice(oldest, 1);
         list.push({
             part,
-            x: 8 + Math.random() * (TRAIN_WIDTH - 16),
-            y: spec.y[0] + Math.random() * (spec.y[1] - spec.y[0]),
+            x: TRAIN_RIG.bodyX[0] + Math.random() * (TRAIN_RIG.bodyX[1] - TRAIN_RIG.bodyX[0]),
+            y: Math.min(Math.max(spec.y[0] + Math.random() * (spec.y[1] - spec.y[0]), TRAIN_RIG.bodyY[0]), TRAIN_RIG.bodyY[1]),
             r: spec.r[0] + Math.random() * (spec.r[1] - spec.r[0]),
             kind: spec.kind,
             style: spec.style || {},
@@ -723,6 +725,92 @@ class TrainGame {
             ctx.save();
             ctx.globalAlpha = fade;
             render(ctx, m, ox + m.x, oy + m.y, age);
+            ctx.restore();
+        }
+    }
+
+    // ── Hazard particles ───────────────────────────────────────────────────
+    // A level's mechanic.fx = spec | [spec, ...] animates the hazard against the trains:
+    //   kind     ThemeKit.fx[kind] draws one particle (themes/registry.js)
+    //   trigger  'penalty' (car is being slowed) | 'any' (car is in any zone) | 'ambient'
+    //   rate     spawn chance per car per frame at full strength (scaled by train speed)
+    //   n        particles per spawn      at  'wheels' (default) | 'body'
+    //   r, vx, vy, y, life   [min, max] or a number. vx/vy are px/frame relative to the car
+    //            (vy up); y is the spawn height above the rail; life is seconds
+    //   g        gravity px/frame^2 (negative floats up)     land  'die' | 'splat'
+    //   inherit  share of the car's own speed the particle keeps: number or fn(k)
+    // Anchors come from TRAIN_RIG (sprites.js), so new train art needs no change here.
+    updateFx(dt, spawn = true) {
+        const list = this.fxList;
+        if (!list) return;
+        const s = dt * 60;
+        for (let i = list.length - 1; i >= 0; i--) {
+            const p = list[i];
+            p.age += dt;
+            if (p.age >= p.life) { list.splice(i, 1); continue; }
+            if (p.landed) continue;
+            p.x += p.vx * s;
+            p.h += p.vy * s;
+            p.vy -= p.g * s;
+            if (p.h < 0 && p.vy < 0) {
+                if (p.land === 'splat') {
+                    p.landed = true; p.landedAt = p.age; p.h = 0; p.vx = 0; p.vy = 0;
+                    p.life = p.age + 0.45;
+                } else list.splice(i, 1);
+            }
+        }
+        const mech = this.def && this.def.mechanic;
+        if (!spawn || !mech || !mech.fx || !this.raceStarted || list.length >= FX_MAX) return;
+        const specs = Array.isArray(mech.fx) ? mech.fx : [mech.fx];
+        const t = this.gameState.time;
+        const reach = this.canvas.width / 2 + 200;
+        const R = (a, d) => (a === undefined ? d : Array.isArray(a) ? a[0] + Math.random() * (a[1] - a[0]) : a);
+        ThemeKit.eachCar(this, (who, train, part, cx) => {
+            if (Math.abs(cx - this.cameraX) > reach) return;
+            const k = mech.speedMult ? mech.speedMult(this.mechState, cx, t, this) : 1;
+            const speed = Math.min(Math.max(train.vx, 0) / 4, 1.2);
+            for (const sp of specs) {
+                let power = 0;
+                if (sp.trigger === 'ambient') power = 1;
+                else if (sp.trigger === 'any') power = Math.min(Math.abs(1 - k) / 0.15, 1);
+                else power = k < 1 ? 1 - k : 0;
+                const chance = (sp.rate ?? 0.1) * power * (speed > 0.25 ? speed : 0);
+                if (Math.random() >= chance) continue;
+                for (let j = 0; j < (sp.n || 1); j++) {
+                    const body = sp.at === 'body';
+                    const left = cx - TRAIN_WIDTH / 2;
+                    const px = body
+                        ? left + TRAIN_RIG.bodyX[0] + Math.random() * (TRAIN_RIG.bodyX[1] - TRAIN_RIG.bodyX[0])
+                        : left + TRAIN_RIG.wheelX[Math.floor(Math.random() * TRAIN_RIG.wheelX.length)];
+                    const h = body
+                        ? TRAIN_HEIGHT - (TRAIN_RIG.bodyY[0] + Math.random() * (TRAIN_RIG.bodyY[1] - TRAIN_RIG.bodyY[0]))
+                        : R(sp.y, 4);
+                    const inherit = typeof sp.inherit === 'function' ? sp.inherit(k) : (sp.inherit ?? 1);
+                    list.push({
+                        kind: sp.kind, who, x: px, h,
+                        vx: train.vx * inherit + R(sp.vx, 0), vy: R(sp.vy, 2), g: sp.g ?? 0.25,
+                        age: 0, life: R(sp.life, 0.8), r: R(sp.r, 3), seed: Math.random() * 1000,
+                        land: sp.land || 'die', style: sp.style || {},
+                    });
+                }
+            }
+        });
+    }
+
+    // Draw one train's hazard particles (called right after that train so the lanes layer).
+    drawHazardFx(ctx, who) {
+        const list = this.fxList;
+        if (!list || !list.length) return;
+        const base = who === 'opponent' ? TRACK_BACK : TRACK_FRONT;
+        const W = this.canvas.width;
+        for (const p of list) {
+            if (p.who !== who) continue;
+            const render = ThemeKit.fx[p.kind];
+            if (!render) continue;
+            const sx = ThemeKit.sx(this, p.x);
+            if (sx < -40 || sx > W + 40) continue;
+            ctx.save();
+            render(ctx, p, sx, base - this.getElevation(p.x) - p.h, p.age / p.life);
             ctx.restore();
         }
     }
@@ -1331,6 +1419,7 @@ class TrainGame {
             this.opponent.wheelFrame += Math.abs(this.opponent.vx) * this.wheelAnimationSpeed;
             if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
             this.updateCars();
+            this.updateFx(deltaTime, false);
             // Wait until the train nearly stops before placing the crowd,
             // so people spawn at the actual stopped position, not the finish line.
             if (!this.crowdSpawned && Math.abs(this.train.vx) < 0.05) this.spawnCrowd();
@@ -1437,6 +1526,7 @@ class TrainGame {
 
         this.updateCars();
         this.updateMarks();
+        this.updateFx(deltaTime);
         this.checkFinish();
         this.gameState.time += deltaTime;
 
@@ -1783,8 +1873,8 @@ class TrainGame {
     // Spacing carts exactly TRAIN_WIDTH apart lets the transparent art-pixel edges on
     // each side of every sprite create the natural ~8 px coupling gap for free.
     drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame, isCity) {
-        const p  = 4;           // 1 art-pixel = 4 screen-pixels
-        const cw = TRAIN_WIDTH; // 160 screen px = 40 art px
+        const p  = TRAIN_RIG.px;  // 1 art-pixel = 4 screen-pixels
+        const cw = TRAIN_WIDTH;   // 160 screen px = 40 art px
 
         // ── Left/right border columns (art col 1 and 38) ──────────────────────
         ctx.fillStyle = '#404040';
@@ -1827,12 +1917,11 @@ class TrainGame {
 
         // ── Row 10: axle attachment dots (matching sprite row 10) ─────────────
         if (!isCity) {
-            ctx.fillRect(cx + p*9,  cy + p*10, p, p);   // axle attachments at the bogie midpoints
-            ctx.fillRect(cx + p*30, cy + p*10, p, p);
+            for (const col of TRAIN_RIG.axleCols) ctx.fillRect(cx + p*col, cy + p*TRAIN_RIG.wheelRow, p, p);   // axle attachments
 
             // ── Wheels: animated, reuse locomotive wheel sprite ──────────────────
             const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
-            this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*10);
+            this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*TRAIN_RIG.wheelRow);
         }
     }
 
@@ -2619,6 +2708,7 @@ class TrainGame {
         const oppAlpha = mech && mech.opponentAlpha ? mech.opponentAlpha(this.mechState, this) : 1;
         ctx.globalAlpha = oppAlpha;
         this.drawThemedTrain(ctx, 'opponent', elevated);
+        this.drawHazardFx(ctx, 'opponent');
         ctx.globalAlpha = 1;
 
         const rLayer = this.layers.find(l => l.name === 'rocks');
@@ -2633,6 +2723,7 @@ class TrainGame {
         else          this.drawTrack(ctx, TRACK_FRONT, 1.0);
         this.drawFinishLine(ctx);
         this.drawThemedTrain(ctx, 'player', elevated);
+        this.drawHazardFx(ctx, 'player');
         if (mech && mech.drawZones) mech.drawZones(ctx, this.mechState, this, 'over');
 
         if (elevated) ctx.restore();

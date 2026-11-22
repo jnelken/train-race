@@ -16,11 +16,30 @@ const COLORS = {
     green: '#27ae60',
 };
 
-// Two 2-wheel bogies, mirror-symmetric about the car's centre line (the body spans art
-// columns 1-38, centre 19.5). Wheel centres 6, 12 | 27, 33; their axle attachment points
-// (body row 10) sit at the bogie midpoints, columns 9 and 30. The two frames alternate the
-// hub dot so the wheels appear to turn.
-const WHEEL_CENTERS = [6, 12, 27, 33];
+// ── Train rig ────────────────────────────────────────────────────────────────
+// WHERE things sit on a car. Everything outside this file that needs a point on the
+// train (hazard particles, residue marks, wheel splashes, the procedural carts) reads it
+// from TRAIN_RIG and never uses a hard-coded pixel. To swap in a new train design:
+//   1. replace the sprite frames below (TRAIN_SPRITES.idle / makeWheelFrames),
+//   2. update TRAIN_RIG so the anchors match the new art,
+//   3. keep TRAIN_WIDTH / TRAIN_HEIGHT in game.js equal to the art size * px.
+// Art grid is 40 columns x 16 rows at `px` screen pixels per art pixel.
+const TRAIN_RIG = {
+    px: 4,
+    // Two 2-wheel bogies, mirror-symmetric about the car's centre line (the body spans art
+    // columns 1-38, centre 19.5). Wheel centres 6, 12 | 27, 33; their axle attachment
+    // points (body row 10) sit at the bogie midpoints, columns 9 and 30.
+    wheelCols: [6, 12, 27, 33],   // art columns of the wheel centres
+    axleCols: [9, 30],            // art columns of the axle attachment dots
+    wheelRow: 10,                 // art row where the wheel sprite is drawn
+    // Where marks and body-mounted particles may sit, in screen px from the car's top-left.
+    bodyX: [8, 152],
+    bodyY: [8, 50],
+};
+// Derived anchors (screen px from the car's left edge): centre of each wheel.
+TRAIN_RIG.wheelX = TRAIN_RIG.wheelCols.map(c => (c + 0.5) * TRAIN_RIG.px);
+
+const WHEEL_CENTERS = TRAIN_RIG.wheelCols;
 function makeWheelFrames() {
     const frame = (hubRow) => {
         const rows = Array.from({ length: 8 }, () => new Array(40).fill(0));
@@ -206,6 +225,7 @@ const OPPONENT_SPRITES = {
 };
 
 // Export for use in game
+window.TRAIN_RIG = TRAIN_RIG;
 window.TRAIN_SPRITES = TRAIN_SPRITES;
 window.OPPONENT_SPRITES = OPPONENT_SPRITES;
 window.SpriteRenderer = SpriteRenderer;
