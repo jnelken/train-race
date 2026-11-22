@@ -156,6 +156,7 @@ registerTheme({
     },
 
     mechanic: {
+        marks: { kind: 'frost', trigger: 'ambient', rate: 0.02, r: [4, 9], y: [8, 42], life: 30, perPart: 8 },
         physics: { inertia: 0.5 },
 
         // The rails gleam: a glossy band across both lanes with drifting glints.

@@ -96,6 +96,7 @@ registerTheme({
     },
 
     mechanic: {
+        marks: { kind: 'mud', trigger: 'penalty', rate: 0.22, r: [3, 7.5], y: [20, 42], life: 55, perPart: 16 },
         init(game) {
             const count = Math.max(4, Math.round(game.finishLineWorldX / 2900));
             return { zones: ThemeKit.placeZones(game, { count, lenMin: 350, lenMax: 600, margin: 1500, gap: 450 }) };

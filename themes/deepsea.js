@@ -163,6 +163,7 @@ registerTheme({
     },
 
     mechanic: {
+        marks: { kind: 'kelp', trigger: 'any', rate: 0.06, r: [7, 12], y: [10, 34], life: 24, perPart: 6 },
         init(game) {
             const count = Math.max(5, Math.round(game.finishLineWorldX / 2300));
             const zones = ThemeKit.placeZones(game, { count, lenMin: 520, lenMax: 820, margin: 1400, gap: 350 });

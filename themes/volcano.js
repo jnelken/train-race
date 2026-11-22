@@ -157,6 +157,7 @@ registerTheme({
     },
 
     mechanic: {
+        marks: { kind: 'lava', trigger: 'penalty', rate: 0.16, r: [4, 9], y: [8, 40], hot: 7, perPart: 16 },
         init(game) {
             const count = Math.max(6, Math.round(game.finishLineWorldX / 1800));
             const zones = ThemeKit.placeZones(game, { count, lenMin: 190, lenMax: 240, margin: 1400, gap: 350 });
