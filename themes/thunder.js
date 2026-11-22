@@ -155,7 +155,7 @@ registerTheme({
     },
 
     terrain(finishX) {
-        const hills = makeSaharaHills(finishX).map(h => ({ ...h, amp: h.amp * 0.85 }));
+        const hills = makeSaharaHills(finishX, 0.85);
         return {
             elevation: (x) => getBumpElevation(x, hills),
             slope: (x) => getBumpSlope(x, hills),

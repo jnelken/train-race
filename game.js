@@ -249,48 +249,57 @@ function getCandyPhysicsSlope(worldX, wave) {
 }
 
 // ─── Rolling ridges: Sahara and every registry level that borrows its terrain ─
-// A ridge is a rise, a short crest and a fall, each face eased with a smootherstep so
-// the rails never kink. A face's steepest point is height × 1.875 / width, so the
-// generator picks the ANGLE it wants (anywhere up to HILL_MAX_DEG, near-vertical) and
-// derives the width from it. The height lives in `amp`, so levels can still scale it
-// (`{...h, amp: h.amp * k}`); that steepens the faces by the same factor, which the
-// angle range leaves room for. Gaussian bumps ({center, sigma, amp}) still work too.
-const HILL_MIN_DEG   = 28;    // gentlest face a ridge can have
-const HILL_MAX_DEG   = 85;    // hard ceiling on any face's steepest point, near-vertical
-const HILL_WALL_DEG  = [72, 82];   // every course gets one face in this band
-const HILL_HEIGHT    = [120, 240]; // ridge heights (px)
-const HILL_START_MARGIN = 700;     // keeps the start station flat
-const HILL_END_MARGIN   = 800;     // keeps the finish station and braking run flat
+// A ridge is built the way a real track is laid: straight runs joined by circular bends. Going up
+// is a bend from flat to the face angle, a straight face, then a bend back to flat (the crest), and
+// the fall mirrors it. NO bend is tighter than HILL_MIN_RADIUS, so the slope only ever changes at a
+// bounded rate: a face can be near-vertical, but the track eases into and out of it over a few
+// hundred px instead of dropping off a cliff edge. A bend of radius R swings the angle through
+// theta using R(1 - cos theta) of height, so the steepest face a hill can have depends on its height
+// (see hillMaxDeg): tall ridges can reach HILL_MAX_DEG, short ones stay gentler.
+// The finished profile is sampled once, 1 px per cell, so elevation/slope lookups are O(1).
+const HILL_MIN_RADIUS   = 340;        // px: the tightest bend in any ridge
+const HILL_MAX_DEG      = 85;         // hard ceiling on a face's angle, near-vertical
+const HILL_FACE_MIN_DEG = 28;         // gentlest face a ridge is given
+const HILL_HEIGHT       = [180, 560]; // ordinary ridge heights (px)
+const HILL_WALL_HEIGHT  = [560, 700]; // the one tall ridge per course that gets a near-vertical face
+const HILL_START_MARGIN = 700;        // keeps the start station flat
+const HILL_END_MARGIN   = 800;        // keeps the finish station and braking run flat
 const HILL_MIN_GAP      = 140;
 
-function smootherstep(t)      { return t * t * t * (t * (t * 6 - 15) + 10); }
-function smootherstepSlope(t) { const u = t * (1 - t); return 30 * u * u; }
+// Steepest face (degrees) a ridge of height h can have with bends no tighter than HILL_MIN_RADIUS.
+// Only 90% of the height goes into the two bends, so the face keeps a short straight run.
+function hillMaxDeg(h) {
+    const c = 1 - 0.9 * h / (2 * HILL_MIN_RADIUS);
+    return c <= 0 ? HILL_MAX_DEG : Math.min(HILL_MAX_DEG, Math.acos(c) * 180 / Math.PI);
+}
 
-function makeSaharaHills(finishLineWorldX) {
-    const faceWidth = (h, deg) => 1.875 * h / Math.tan(deg * Math.PI / 180);
-    // Most faces are mid-range; the steep end is rarer.
-    const faceAngle = () => HILL_MIN_DEG + (HILL_WALL_DEG[1] - HILL_MIN_DEG) * Math.pow(Math.random(), 1.3);
+function makeSaharaHills(finishLineWorldX, heightScale = 1) {
+    const R = HILL_MIN_RADIUS, rad = Math.PI / 180;
+    const faceLen = (H, deg) => Math.max(0, (H - 2 * R * (1 - Math.cos(deg * rad))) / Math.sin(deg * rad));
+    const faceDx  = (H, deg) => 2 * R * Math.sin(deg * rad) + faceLen(H, deg) * Math.cos(deg * rad);
+    const pickFace = (H) => {
+        const hi = hillMaxDeg(H), lo = Math.min(HILL_FACE_MIN_DEG, hi);
+        return lo + Math.random() * (hi - lo);
+    };
     const ridges = [];
-    const count = 4 + Math.floor(Math.random() * 3);    // 4–6 ridges
+    const count = 4 + Math.floor(Math.random() * 3);    // 4-6 ridges
     for (let i = 0; i < count; i++) {
-        ridges.push({
-            type: 'ridge',
-            amp: HILL_HEIGHT[0] + Math.random() * (HILL_HEIGHT[1] - HILL_HEIGHT[0]),
-            riseDeg: faceAngle(), fallDeg: faceAngle(),
-            top: Math.random() * 200,                    // flat crest between the faces
-        });
+        const H = (HILL_HEIGHT[0] + Math.pow(Math.random(), 1.2) * (HILL_HEIGHT[1] - HILL_HEIGHT[0])) * heightScale;
+        ridges.push({ H, top: Math.random() * 200, riseDeg: pickFace(H), fallDeg: pickFace(H) });
     }
+    // One tall ridge per course carries a near-vertical face.
     const wall = ridges[Math.floor(Math.random() * ridges.length)];
-    wall[Math.random() < 0.5 ? 'riseDeg' : 'fallDeg'] =
-        HILL_WALL_DEG[0] + Math.random() * (HILL_WALL_DEG[1] - HILL_WALL_DEG[0]);
-    for (const r of ridges) {
-        r.riseW = faceWidth(r.amp, r.riseDeg);
-        r.fallW = faceWidth(r.amp, r.fallDeg);
-        r.len = r.riseW + r.top + r.fallW;
-    }
+    wall.H = (HILL_WALL_HEIGHT[0] + Math.random() * (HILL_WALL_HEIGHT[1] - HILL_WALL_HEIGHT[0])) * heightScale;
+    const wallHi = Math.min(82, hillMaxDeg(wall.H));
+    const wallDeg = Math.min(70, wallHi) + Math.random() * (wallHi - Math.min(70, wallHi));
+    wall[Math.random() < 0.5 ? 'riseDeg' : 'fallDeg'] = wallDeg;
+    wall.riseDeg = Math.min(wall.riseDeg, hillMaxDeg(wall.H));
+    wall.fallDeg = Math.min(wall.fallDeg, hillMaxDeg(wall.H));
+    for (const r of ridges) r.dx = faceDx(r.H, r.riseDeg) + r.top + faceDx(r.H, r.fallDeg);
+
     const avail = Math.max(finishLineWorldX - HILL_START_MARGIN - HILL_END_MARGIN, 1000);
-    const used = () => ridges.reduce((s, r) => s + r.len, 0) + HILL_MIN_GAP * (ridges.length - 1);
-    while (ridges.length > 1 && used() > avail) ridges.pop();   // gentle, wide ridges can crowd a short course
+    const used = () => ridges.reduce((s, r) => s + r.dx, 0) + HILL_MIN_GAP * (ridges.length - 1);
+    while (ridges.length > 1 && used() > avail) ridges.pop();   // wide ridges can crowd a short course
 
     // Spread the leftover flat ground randomly: before, between and after the ridges.
     const n = ridges.length;
@@ -299,16 +308,52 @@ function makeSaharaHills(finishLineWorldX) {
     const wsum = wts.reduce((s, w) => s + w, 0);
     let x = HILL_START_MARGIN + extra * wts[0] / wsum;
     ridges.forEach((r, i) => {
-        r.a = x;                                         // the rise starts here
-        x += r.len + HILL_MIN_GAP + extra * wts[i + 1] / wsum;
+        r.a = x;
+        x += r.dx + HILL_MIN_GAP + extra * wts[i + 1] / wsum;
     });
-    return ridges;
+
+    // Lay each ridge out as bends and straights, then sample it onto a 1 px grid.
+    const end = Math.ceil(ridges[n - 1].a + ridges[n - 1].dx) + 4;
+    const ys = new Float32Array(end + 1), sl = new Float32Array(end + 1);
+    let maxY = 0;
+    for (const r of ridges) {
+        const up = r.riseDeg * rad, down = r.fallDeg * rad;
+        const segs = [
+            { arc: true, from: 0, to: up, len: R * up },
+            { arc: false, ang: up, len: faceLen(r.H, r.riseDeg) },
+            { arc: true, from: up, to: 0, len: R * up },
+            { arc: false, ang: 0, len: r.top },
+            { arc: true, from: 0, to: -down, len: R * down },
+            { arc: false, ang: -down, len: faceLen(r.H, r.fallDeg) },
+            { arc: true, from: -down, to: 0, len: R * down },
+        ];
+        let px = r.a, py = 0, cell = Math.ceil(r.a);
+        for (const seg of segs) {
+            const steps = Math.max(1, Math.ceil(seg.len));
+            const ds = seg.len / steps;
+            for (let k = 0; k < steps; k++) {
+                const t0 = seg.arc ? seg.from + (seg.to - seg.from) * (k / steps) : seg.ang;
+                const t1 = seg.arc ? seg.from + (seg.to - seg.from) * ((k + 1) / steps) : seg.ang;
+                const tm = (t0 + t1) / 2;
+                const nx = px + Math.cos(tm) * ds, ny = py + Math.sin(tm) * ds;
+                while (cell <= nx && cell < ys.length) {
+                    const t = (cell - px) / (nx - px || 1);
+                    ys[cell] = py + (ny - py) * t;
+                    sl[cell] = Math.tan(t0 + (t1 - t0) * t);
+                    maxY = Math.max(maxY, ys[cell]);
+                    cell++;
+                }
+                px = nx; py = ny;
+            }
+        }
+    }
+    return [{ type: 'field', ys, sl, amp: maxY }];
 }
 
 // Steepest face angle (degrees) of a hill list, for tests and tuning.
 function maxHillDegrees(hills, finishLineWorldX) {
     let s = 0;
-    for (let x = 0; x <= finishLineWorldX; x += 4) s = Math.max(s, Math.abs(getBumpSlope(x, hills)));
+    for (let x = 0; x <= finishLineWorldX; x += 2) s = Math.max(s, Math.abs(getBumpSlope(x, hills)));
     return Math.atan(s) * 180 / Math.PI;
 }
 
@@ -316,12 +361,10 @@ function getBumpElevation(worldX, hills) {
     if (!hills || hills.length === 0) return 0;
     let elev = 0;
     for (const h of hills) {
-        if (h.type === 'ridge') {
-            const t = worldX - h.a;
-            if (t <= 0) continue;
-            if (t < h.riseW) elev += h.amp * smootherstep(t / h.riseW);
-            else if (t < h.riseW + h.top) elev += h.amp;
-            else if (t < h.len) elev += h.amp * (1 - smootherstep((t - h.riseW - h.top) / h.fallW));
+        if (h.type === 'field') {
+            if (worldX < 0 || worldX >= h.ys.length - 1) continue;
+            const i = Math.floor(worldX), f = worldX - i;
+            elev += h.ys[i] + (h.ys[i + 1] - h.ys[i]) * f;
             continue;
         }
         const dx = worldX - h.center;
@@ -334,13 +377,10 @@ function getBumpSlope(worldX, hills) {
     if (!hills || hills.length === 0) return 0;
     let slope = 0;
     for (const h of hills) {
-        if (h.type === 'ridge') {
-            const t = worldX - h.a;
-            if (t <= 0) continue;
-            if (t < h.riseW) slope += h.amp * smootherstepSlope(t / h.riseW) / h.riseW;
-            else if (t >= h.riseW + h.top && t < h.len) {
-                slope -= h.amp * smootherstepSlope((t - h.riseW - h.top) / h.fallW) / h.fallW;
-            }
+        if (h.type === 'field') {
+            if (worldX < 0 || worldX >= h.sl.length - 1) continue;
+            const i = Math.floor(worldX), f = worldX - i;
+            slope += h.sl[i] + (h.sl[i + 1] - h.sl[i]) * f;
             continue;
         }
         const dx = worldX - h.center;
