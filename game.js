@@ -248,106 +248,125 @@ function getCandyPhysicsSlope(worldX, wave) {
     return visual * (CANDY_PHYSICS_AMP / Math.max(primaryAmp, 1));
 }
 
-// ─── Rolling ridges: Sahara and every registry level that borrows its terrain ─
-// A ridge is built the way a real track is laid: straight runs joined by circular bends. Going up
-// is a bend from flat to the face angle, a straight face, then a bend back to flat (the crest), and
-// the fall mirrors it. NO bend is tighter than HILL_MIN_RADIUS, so the slope only ever changes at a
-// bounded rate: a face can be near-vertical, but the track eases into and out of it over a few
-// hundred px instead of dropping off a cliff edge. A bend of radius R swings the angle through
-// theta using R(1 - cos theta) of height, so the steepest face a hill can have depends on its height
-// (see hillMaxDeg): tall ridges can reach HILL_MAX_DEG, short ones stay gentler.
-// The finished profile is sampled once, 1 px per cell, so elevation/slope lookups are O(1).
-const HILL_MIN_RADIUS   = 340;        // px: the tightest bend in any ridge
+// ─── Rolling hills: Sahara and every registry level that borrows its terrain ─
+// Terrain is laid out like a real track: straights joined by circular bends, and no bend is tighter
+// than HILL_MIN_RADIUS, so the slope only ever changes at a bounded rate (a face can still be
+// near-vertical, but it eases in and out over hundreds of px instead of dropping off a cliff edge).
+// Two knobs shape a course (see makeHills):
+//   maxHeight  the tallest hill's height in px (the other hills are 40-95% of it)
+//   rolliness  0..1. 0: flat plains with hills interspersed, steep as the radius and height allow.
+//              1: the hills take up the whole course with no flat plains, valleys that sit above the
+//              start level, and faces wide enough to be a smooth S-curve with no straight part.
+// A face is rise `dh` over run `dx`: a smooth S when it is wide enough, otherwise bends of the minimum
+// radius around a straight. A face at angle theta spends 2R(1 - cos theta) of its height in the bends,
+// so near-vertical faces need hills taller than about 2R. The finished profile is sampled once onto a
+// 1 px grid so elevation/slope lookups are O(1).
+const HILL_MIN_RADIUS   = 520;        // px: the tightest bend in any hill
 const HILL_MAX_DEG      = 85;         // hard ceiling on a face's angle, near-vertical
-const HILL_FACE_MIN_DEG = 28;         // gentlest face a ridge is given
-const HILL_HEIGHT       = [180, 560]; // ordinary ridge heights (px)
-const HILL_WALL_HEIGHT  = [560, 700]; // the one tall ridge per course that gets a near-vertical face
 const HILL_START_MARGIN = 700;        // keeps the start station flat
 const HILL_END_MARGIN   = 800;        // keeps the finish station and braking run flat
-const HILL_MIN_GAP      = 140;
+const HILL_DEFAULTS     = { maxHeight: 560, rolliness: 0.35 };
+const SAHARA_HILLS      = { maxHeight: 480, rolliness: 0.6 };   // rolling dunes
 
-// Steepest face (degrees) a ridge of height h can have with bends no tighter than HILL_MIN_RADIUS.
-// Only 90% of the height goes into the two bends, so the face keeps a short straight run.
-function hillMaxDeg(h) {
-    const c = 1 - 0.9 * h / (2 * HILL_MIN_RADIUS);
-    return c <= 0 ? HILL_MAX_DEG : Math.min(HILL_MAX_DEG, Math.acos(c) * 180 / Math.PI);
+// One face of rise `dh` over run `dx`, with bends no tighter than R: { R, ang, len, dx }. `ang` is the
+// face's steepest angle in radians, `len` its straight stretch, `dx` the run it actually takes (a face
+// cannot be steeper than R and its height allow, so it may need more run than asked for).
+function hillFace(dh, dx, R) {
+    const cap = HILL_MAX_DEG * Math.PI / 180;
+    if (dh < 0.5) return { R, ang: 0, len: dx, dx };
+    const bends = (a) => 2 * R * (1 - Math.cos(a));
+    const aStar = dh <= bends(cap) ? Math.acos(1 - dh / (2 * R)) : cap;       // steepest possible
+    const span = (a) => 2 * R * Math.sin(a) + Math.max(0, dh - bends(a)) * Math.cos(a) / Math.sin(a);
+    const dxMin = span(aStar);
+    if (dx <= dxMin) return { R, ang: aStar, len: Math.max(0, dh - bends(aStar)) / Math.sin(aStar), dx: dxMin };
+    const ap = 2 * Math.atan(dh / dx), Rp = dx / (2 * Math.sin(ap));          // a single smooth S
+    if (Rp >= R && ap <= aStar) return { R: Rp, ang: ap, len: 0, dx };
+    let lo = 1e-3, hi = aStar;                                                // the span falls as the angle grows
+    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (span(mid) > dx) lo = mid; else hi = mid; }
+    const a = (lo + hi) / 2;
+    return { R, ang: a, len: (dh - bends(a)) / Math.sin(a), dx };
 }
 
-function makeSaharaHills(finishLineWorldX, heightScale = 1) {
-    const R = HILL_MIN_RADIUS, rad = Math.PI / 180;
-    const faceLen = (H, deg) => Math.max(0, (H - 2 * R * (1 - Math.cos(deg * rad))) / Math.sin(deg * rad));
-    const faceDx  = (H, deg) => 2 * R * Math.sin(deg * rad) + faceLen(H, deg) * Math.cos(deg * rad);
-    const pickFace = (H) => {
-        const hi = hillMaxDeg(H), lo = Math.min(HILL_FACE_MIN_DEG, hi);
-        return lo + Math.random() * (hi - lo);
-    };
-    const ridges = [];
-    const count = 4 + Math.floor(Math.random() * 3);    // 4-6 ridges
-    for (let i = 0; i < count; i++) {
-        const H = (HILL_HEIGHT[0] + Math.pow(Math.random(), 1.2) * (HILL_HEIGHT[1] - HILL_HEIGHT[0])) * heightScale;
-        ridges.push({ H, top: Math.random() * 200, riseDeg: pickFace(H), fallDeg: pickFace(H) });
-    }
-    // One tall ridge per course carries a near-vertical face.
-    const wall = ridges[Math.floor(Math.random() * ridges.length)];
-    wall.H = (HILL_WALL_HEIGHT[0] + Math.random() * (HILL_WALL_HEIGHT[1] - HILL_WALL_HEIGHT[0])) * heightScale;
-    const wallHi = Math.min(82, hillMaxDeg(wall.H));
-    const wallDeg = Math.min(70, wallHi) + Math.random() * (wallHi - Math.min(70, wallHi));
-    wall[Math.random() < 0.5 ? 'riseDeg' : 'fallDeg'] = wallDeg;
-    wall.riseDeg = Math.min(wall.riseDeg, hillMaxDeg(wall.H));
-    wall.fallDeg = Math.min(wall.fallDeg, hillMaxDeg(wall.H));
-    for (const r of ridges) r.dx = faceDx(r.H, r.riseDeg) + r.top + faceDx(r.H, r.fallDeg);
-
+function makeHills(finishLineWorldX, opts = {}) {
+    const maxHeight = opts.maxHeight ?? HILL_DEFAULTS.maxHeight;
+    const rolliness = Math.min(1, Math.max(0, opts.rolliness ?? HILL_DEFAULTS.rolliness));
+    const R = HILL_MIN_RADIUS;
     const avail = Math.max(finishLineWorldX - HILL_START_MARGIN - HILL_END_MARGIN, 1000);
-    const used = () => ridges.reduce((s, r) => s + r.dx, 0) + HILL_MIN_GAP * (ridges.length - 1);
-    while (ridges.length > 1 && used() > avail) ridges.pop();   // wide ridges can crowd a short course
+    const coverage = 0.3 + 0.7 * rolliness;                  // share of the course the faces take up
+    const n = 4 + Math.floor(Math.random() * 3) + Math.round(rolliness * 3);   // 4-6 hills, up to 7-9
 
-    // Spread the leftover flat ground randomly: before, between and after the ridges.
-    const n = ridges.length;
-    const extra = Math.max(0, avail - used());
-    const wts = Array.from({ length: n + 1 }, () => 0.3 + Math.random());
-    const wsum = wts.reduce((s, w) => s + w, 0);
-    let x = HILL_START_MARGIN + extra * wts[0] / wsum;
-    ridges.forEach((r, i) => {
-        r.a = x;
-        x += r.dx + HILL_MIN_GAP + extra * wts[i + 1] / wsum;
-    });
+    // Peaks, and valley floors between them (the course starts and ends at 0).
+    const tall = Math.floor(Math.random() * n);
+    const peaks = Array.from({ length: n }, (_, i) => maxHeight * (i === tall ? 1 : 0.4 + 0.55 * Math.random()));
+    const floors = Array.from({ length: n + 1 }, (_, i) =>
+        (i === 0 || i === n) ? 0 : rolliness * Math.random() * 0.4 * Math.min(peaks[i - 1], peaks[i]));
+    const faceWts = Array.from({ length: 2 * n }, () => 0.5 + Math.random());   // random run per unit of height
 
-    // Lay each ridge out as bends and straights, then sample it onto a 1 px grid.
-    const end = Math.ceil(ridges[n - 1].a + ridges[n - 1].dx) + 4;
-    const ys = new Float32Array(end + 1), sl = new Float32Array(end + 1);
-    let maxY = 0;
-    for (const r of ridges) {
-        const up = r.riseDeg * rad, down = r.fallDeg * rad;
-        const segs = [
-            { arc: true, from: 0, to: up, len: R * up },
-            { arc: false, ang: up, len: faceLen(r.H, r.riseDeg) },
-            { arc: true, from: up, to: 0, len: R * up },
-            { arc: false, ang: 0, len: r.top },
-            { arc: true, from: 0, to: -down, len: R * down },
-            { arc: false, ang: -down, len: faceLen(r.H, r.fallDeg) },
-            { arc: true, from: -down, to: 0, len: R * down },
-        ];
-        let px = r.a, py = 0, cell = Math.ceil(r.a);
-        for (const seg of segs) {
-            const steps = Math.max(1, Math.ceil(seg.len));
-            const ds = seg.len / steps;
-            for (let k = 0; k < steps; k++) {
-                const t0 = seg.arc ? seg.from + (seg.to - seg.from) * (k / steps) : seg.ang;
-                const t1 = seg.arc ? seg.from + (seg.to - seg.from) * ((k + 1) / steps) : seg.ang;
-                const tm = (t0 + t1) / 2;
-                const nx = px + Math.cos(tm) * ds, ny = py + Math.sin(tm) * ds;
-                while (cell <= nx && cell < ys.length) {
-                    const t = (cell - px) / (nx - px || 1);
-                    ys[cell] = py + (ny - py) * t;
-                    sl[cell] = Math.tan(t0 + (t1 - t0) * t);
-                    maxY = Math.max(maxY, ys[cell]);
-                    cell++;
-                }
-                px = nx; py = ny;
-            }
+    // Fit: if faces that cannot be as steep as asked need more run than the course has, shrink the hills.
+    let faces, scale = 1;
+    for (let iter = 0; iter < 40; iter++) {
+        const heights = [];       // |dh| of each face, rise then fall for every hill
+        for (let i = 0; i < n; i++) {
+            heights.push(scale * (peaks[i] - floors[i]));
+            heights.push(scale * (peaks[i] - floors[i + 1]));
         }
+        const wts = heights.map((h, k) => h * faceWts[k]);
+        const wsum = wts.reduce((s, w) => s + w, 0) || 1;
+        faces = heights.map((h, k) => hillFace(h, avail * coverage * wts[k] / wsum, R));
+        if (faces.reduce((s, f) => s + f.dx, 0) <= avail) break;
+        scale *= 0.92;
     }
+    const plains = avail - faces.reduce((s, f) => s + f.dx, 0);
+    const pw = Array.from({ length: n + 1 }, () => 0.25 + Math.random());
+    const pwsum = pw.reduce((s, w) => s + w, 0);
+
+    // Lay it out: plain, rise, fall, plain, ... then sample onto a 1 px grid.
+    const end = Math.ceil(HILL_START_MARGIN + avail) + 8;
+    const ys = new Float32Array(end + 1), sl = new Float32Array(end + 1);
+    let px = HILL_START_MARGIN, py = 0, cell = Math.ceil(px), maxY = 0;
+    const run = (seg) => {
+        const steps = Math.max(1, Math.ceil(seg.len));
+        const ds = seg.len / steps;
+        for (let k = 0; k < steps; k++) {
+            const t0 = seg.arc ? seg.from + (seg.to - seg.from) * (k / steps) : seg.ang;
+            const t1 = seg.arc ? seg.from + (seg.to - seg.from) * ((k + 1) / steps) : seg.ang;
+            const tm = (t0 + t1) / 2;
+            const nx = px + Math.cos(tm) * ds, ny = py + Math.sin(tm) * ds;
+            while (cell <= nx && cell < ys.length) {
+                const t = (cell - px) / (nx - px || 1);
+                ys[cell] = py + (ny - py) * t;
+                sl[cell] = Math.tan(t0 + (t1 - t0) * t);
+                maxY = Math.max(maxY, ys[cell]);
+                cell++;
+            }
+            px = nx; py = ny;
+        }
+    };
+    const plain = (i) => { if (plains > 0) run({ arc: false, ang: 0, len: plains * pw[i] / pwsum }); };
+    const face = (f, up, toLevel) => {
+        const sg = up ? 1 : -1;
+        run({ arc: true, from: 0, to: sg * f.ang, len: f.R * f.ang });
+        run({ arc: false, ang: sg * f.ang, len: f.len });
+        run({ arc: true, from: sg * f.ang, to: 0, len: f.R * f.ang });
+        py = toLevel;                                        // drop numeric drift
+    };
+    for (let i = 0; i < n; i++) {
+        plain(i);
+        face(faces[2 * i], true, scale * peaks[i]);           // shrinking scales every level, so valleys follow
+        face(faces[2 * i + 1], false, scale * floors[i + 1]);
+    }
+    plain(n);
     return [{ type: 'field', ys, sl, amp: maxY }];
+}
+
+// The `terrain(finishX)` a level returns for one of these courses: { elevation, slope, ampMax }.
+function hillTerrain(finishLineWorldX, opts) {
+    const hills = makeHills(finishLineWorldX, opts);
+    return {
+        elevation: (x) => getBumpElevation(x, hills),
+        slope: (x) => getBumpSlope(x, hills),
+        ampMax: Math.max(...hills.map(h => h.amp)),
+    };
 }
 
 // Steepest face angle (degrees) of a hill list, for tests and tuning.
@@ -610,7 +629,7 @@ class TrainGame {
         this._engBufs    = {};     // 'start' | 'loop' | 'end' → AudioBuffer
         this._engSrc     = null;   // currently playing AudioBufferSourceNode
         this._engPending = null;   // pre-scheduled loop node (during 'starting' state)
-        this._soundState = 'idle'; // 'idle' | 'starting' | 'running' | 'stopping'
+        this._soundState = 'idle'; // 'idle' | 'starting' | 'running' | 'stopping' | 'parked'
         this._engRate    = 1;      // last loop playbackRate (varispeed with train speed)
 
         // Fetch + decode all three engine clips up front so there is zero
@@ -690,7 +709,7 @@ class TrainGame {
             this.mountainCenter = this.mountainProfile.center;
             this.mountainPeakHeight = this.mountainProfile.totalPeak;
         } else if (this.theme === 'sahara') {
-            this.saharaHills = makeSaharaHills(this.finishLineWorldX);
+            this.saharaHills = makeHills(this.finishLineWorldX, SAHARA_HILLS);
         }
     }
 
@@ -1576,6 +1595,7 @@ class TrainGame {
         this._stopEngSrc(this._engPending);
         this._engSrc     = null;
         this._engPending = null;
+        this._engGain.gain.cancelScheduledValues(this.audioCtx.currentTime);
         this._engGain.gain.value = 0;
         this._soundState = 'idle';
         this._engRate    = 1;
@@ -2081,7 +2101,23 @@ class TrainGame {
         src.playbackRate.setTargetAtTime(rate, this.audioCtx.currentTime, 0.08);
     }
 
+    // The player's train is parked at the finish station: fade the engine out for good (the loop and
+    // the wind-down clip alike) and stay silent until the next race resets the state machine.
+    _parkEngineSound() {
+        const t = this.audioCtx.currentTime, gain = this._engGain.gain;
+        gain.cancelScheduledValues(t);
+        gain.setValueAtTime(gain.value, t);
+        gain.linearRampToValueAtTime(0, t + 0.25);
+        const srcs = [this._engSrc, this._engPending];
+        this._engSrc = null;
+        this._engPending = null;
+        setTimeout(() => srcs.forEach(src => this._stopEngSrc(src)), 300);
+        this._soundState = 'parked';
+    }
+
     updateSound() {
+        if (this._soundState === 'parked') return;
+        if (this.gameState.result && this.train.stopped) { this._parkEngineSound(); return; }
         const vx   = this.train.vx;
         // Effective speed includes the hill multiplier, so the engine labors uphill
         // and races downhill; stop/start thresholds still use the raw vx.
@@ -2950,6 +2986,38 @@ class TrainGame {
 
     // Race-progress strip (top-right). Thin course line with start/finish ticks;
     // elevated themes add a faint elevation silhouette under the markers.
+    // When the rival is out of sight above or below (a tall hill between the trains), pin an arrow to
+    // that screen edge, under the rival's column, with how many px of height separate the trains.
+    drawRivalIndicator(ctx) {
+        const O = this.opponent;
+        if (!this.raceStarted || this.gameState.result || O.finished) return;
+        const W = this.canvas.width, H = this.canvas.height;
+        const top = O.y + (this.hasElevatedTrack() ? this.cameraY : 0);   // the rival's screen y
+        const above = top + TRAIN_HEIGHT < 6, below = top > H - 6;
+        if (!above && !below) return;
+        const cx = Math.min(W - 200, Math.max(46, this.worldToScreen(O.worldX) + TRAIN_WIDTH / 2));
+        const y = above ? 24 : H - 24, dir = above ? -1 : 1;
+        const gap = Math.round(Math.abs(O.elev - this.train.elev));
+        ctx.save();
+        ctx.globalAlpha = 0.85 + 0.15 * Math.sin(Date.now() / 220);
+        ctx.fillStyle = 'rgba(16,26,44,0.82)';
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(cx - 52, y - 13, 104, 26, 13); else ctx.rect(cx - 52, y - 13, 104, 26);
+        ctx.fill();
+        ctx.fillStyle = '#4aa8f0';                                 // the rival's blue
+        ctx.beginPath();
+        ctx.moveTo(cx - 40, y - dir * 7);
+        ctx.lineTo(cx - 30, y - dir * 7);
+        ctx.lineTo(cx - 35, y + dir * 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(`RIVAL ${gap}`, cx - 22, y + 4);
+        ctx.restore();
+    }
+
     drawMinimap(ctx) {
         const W = this.canvas.width;
         const isMountain = this.theme === 'mountain';
@@ -3531,6 +3599,7 @@ class TrainGame {
         // ── HUD ─────────────────────────────────────────────────────────────
         this.drawLevelBanner(ctx);
         this.drawMinimap(ctx);
+        this.drawRivalIndicator(ctx);
         const activeBoosts = this.activeBoostCount();
         const boostPct     = Math.round(activeBoosts * this.physics.boostPer * 100);
         document.getElementById('speed').textContent =

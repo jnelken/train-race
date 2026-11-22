@@ -155,12 +155,7 @@ registerTheme({
     },
 
     terrain(finishX) {
-        const hills = makeSaharaHills(finishX, 0.85);
-        return {
-            elevation: (x) => getBumpElevation(x, hills),
-            slope: (x) => getBumpSlope(x, hills),
-            ampMax: Math.max(...hills.map(h => h.amp)),
-        };
+        return hillTerrain(finishX, { maxHeight: 420, rolliness: 0.8 });
     },
 
     layers: {

@@ -9,7 +9,11 @@
 //   drawGround(ctx, game, W, H)     optional: texture drawn on top of the ground band
 //   track                 { tie, rail } colors (optional)
 //   lightHud              true when the sky is pale (darkens the minimap panel)
-//   terrain(finishX)      optional: { elevation(x), slope(x), ampMax } with elevation >= 0
+//   terrain(finishX)      optional: { elevation(x), slope(x), ampMax } with elevation >= 0.
+//                         `return hillTerrain(finishX, { maxHeight, rolliness })` builds one from the shared
+//                         curvature-limited hill generator: maxHeight is the tallest hill in px and
+//                         rolliness 0..1 runs from flat plains with hills interspersed (0) to hills taking up
+//                         the whole course with no plains (1). Bends are never tighter than HILL_MIN_RADIUS.
 //   slopeGain             optional: hill speed gain for this level (default 1.2)
 //   speedScale            optional: multiplies every train's ground speed (Warp Lane uses 2)
 //   lengthScale           optional: stretches the course (Warp Lane uses 2 so a race takes as long)

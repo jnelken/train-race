@@ -48,12 +48,7 @@ registerTheme({
 
     // Snow ridges: the shared ridge terrain, a touch lower than the rest.
     terrain(finishX) {
-        const hills = makeSaharaHills(finishX, 0.8);
-        return {
-            elevation: (x) => getBumpElevation(x, hills),
-            slope: (x) => getBumpSlope(x, hills),
-            ampMax: Math.max(...hills.map(h => h.amp)),
-        };
+        return hillTerrain(finishX, { maxHeight: 450, rolliness: 0.5 });
     },
 
     layers: {

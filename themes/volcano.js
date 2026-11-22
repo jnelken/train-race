@@ -24,12 +24,7 @@ registerTheme({
     },
 
     terrain(finishX) {
-        const hills = makeSaharaHills(finishX, 1.2);
-        return {
-            elevation: (x) => getBumpElevation(x, hills),
-            slope: (x) => getBumpSlope(x, hills),
-            ampMax: Math.max(...hills.map(h => h.amp)),
-        };
+        return hillTerrain(finishX, { maxHeight: 900, rolliness: 0.25 });
     },
 
     // Glowing lava cracks in the rock.
