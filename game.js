@@ -84,13 +84,14 @@ const OPPONENT_CONSTANT_SPEED  = 4.5;
 // effective speed = vx × clamp(1 − gain × slope): climbing slows, descending
 // speeds up. It scales DISPLACEMENT, never vx, so the opponent AI (which seeks a
 // target vx) can't fight it and both trains obey the exact same curve.
-const SLOPE_SPEED_MIN  = 0.55;
-const SLOPE_SPEED_MAX  = 1.6;
-// Hills have inertia: the speed factor chases its target slowly (a time constant of ~0.8 s), so a train
-// that crests a hill slowly gains speed GRADUALLY on the way down, and one that hits a climb at speed
-// carries its momentum up it. Scaled by the level's physics.inertia, so ice and low-gravity levels
-// respond even more sluggishly.
-const SLOPE_SPEED_INERTIA = 0.02;   // fraction of the gap to the target factor closed per frame
+const SLOPE_SPEED_MIN  = 0.4;    // the slowest a long climb can drag a train (x its speed)
+const SLOPE_SPEED_MAX  = 2.2;    // the fastest a long descent can send it
+// Hills have inertia: the speed factor chases its target slowly (a time constant of ~1.7 s). A climb
+// starts fast on the momentum the train arrives with and only grinds down to its slowest over a long
+// climb; a descent starts slowly and only builds to its fastest over a long run. Momentum also carries
+// across the valley into the next hill. Scaled by the level's physics.inertia, so ice and low-gravity
+// levels respond even more sluggishly.
+const SLOPE_SPEED_INERTIA = 0.01;   // fraction of the gap to the target factor closed per frame
 const SLOPE_SPEED_GAIN_DEFAULT = 1.2;
 const SLOPE_SPEED_GAIN = { mountain: 1.3, candy: 0.8, sahara: 0.9 };
 
@@ -1182,7 +1183,10 @@ class TrainGame {
             zoomTarget = STATION_ZOOM;
         }
         // A faster world needs a stiffer camera, or the train drifts off-center by the same factor.
-        this.cameraX += (target - this.cameraX) * Math.min(0.5, CAMERA_LERP * this.speedScale());
+        // Past ~7 px/frame of hill-boosted speed (a long descent) the camera stiffens in proportion, so
+        // the train stays near the middle of the screen instead of running off its front.
+        const effSpeed = Math.abs(this.train.vx) * (this.train.slopeMult ?? 1);   // before speedScale, which the lerp already has
+        this.cameraX += (target - this.cameraX) * Math.min(0.5, CAMERA_LERP * this.speedScale() * Math.max(1, effSpeed / 7));
         // Near-vertical faces lift the train faster than a gentle follow can track, so the
         // vertical lerp stiffens past a 45° grade (the mountain and candy never reach it).
         const grade = Math.abs(this.getSlope(this.train.worldX + TRAIN_WIDTH / 2));
