@@ -467,6 +467,7 @@ class TrainGame {
         ];
 
         this.tunnelZones  = this.generateTunnelZones();
+        this.bridgeZones  = this.generateBridgeZones();
         this.cars         = [];
         this.crowd        = [];
         this.crowdSpawned = false;
@@ -883,6 +884,27 @@ class TrainGame {
         return this.tunnelZones.some(z => worldX >= z.startX && worldX <= z.endX);
     }
 
+    // City Bridge: one massive suspension bridge (three towers, two long spans) in the
+    // first or last third of the race, well clear of the tunnel. Scenery only.
+    generateBridgeZones() {
+        if (this.theme !== 'city') return [];
+        const span = 620 + Math.random() * 140;
+        const reach = span * 0.7;                       // backstays run this far past the end towers
+        const half = span + reach;
+        let center = this.finishLineWorldX * (Math.random() < 0.5 ? 0.22 : 0.76) + (Math.random() - 0.5) * 600;
+        const tun = (this.tunnelZones || [])[0];
+        if (tun && center + half + 120 > tun.startX && center - half - 120 < tun.endX) {
+            center = center < (tun.startX + tun.endX) / 2 ? tun.startX - half - 200 : tun.endX + half + 200;
+        }
+        const first = center - span;
+        const towers = [first, first + span, first + 2 * span];
+        return [{ startX: first - reach, endX: towers[2] + reach, towers, span }];
+    }
+
+    inBridge(worldX, pad = 0) {
+        return (this.bridgeZones || []).some(z => worldX >= z.startX - pad && worldX <= z.endX + pad);
+    }
+
     spawnObjectForLayer(layer, x) {
         if (this.def) {
             const L = this.def.layers && this.def.layers[layer.name];
@@ -1075,6 +1097,7 @@ class TrainGame {
             { name: 'rocks',     speed: 0.9, objects: [] },
         ];
         this.tunnelZones  = this.generateTunnelZones();
+        this.bridgeZones  = this.generateBridgeZones();
         this.cars         = [];
         this.crowd        = [];
         this.crowdSpawned = false;
@@ -2171,6 +2194,202 @@ class TrainGame {
         ctx.fillRect(sx + car.w - 9,  sy + 11, 6, 4);
     }
 
+    // ── City Bridge: suspension bridge ──────────────────────────────────────
+    // Behind the trains: river, steel truss deck, piers, main cables, hangers and lamps, and
+    // the far leg of each tower. The near leg is drawn after the trains (drawBridgeTowers).
+    drawBridgeSpan(ctx) {
+        const W = this.canvas.width, H = this.canvas.height;
+        const t = Date.now() / 1000;
+        const deckTop = TRACK_BACK - 9, deckBot = TRACK_FRONT + 9;
+        const trussBot = deckBot + 34;
+        const topY = 24, lowY = 150;               // cable saddle height / lowest point mid-span
+        for (const z of this.bridgeZones) {
+            const sx1 = this.worldToScreen(z.startX), sx2 = this.worldToScreen(z.endX);
+            if (sx2 < -60 || sx1 > W + 60) continue;
+            const a = Math.max(0, sx1), b = Math.min(W, sx2);
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(a, 0, b - a, H);
+            ctx.clip();
+
+            // River: dark water with moonlit shimmer, replacing the street and pillars.
+            const water = ctx.createLinearGradient(0, HORIZON_Y, 0, H);
+            water.addColorStop(0, '#1d4560');
+            water.addColorStop(1, '#0b1f2d');
+            ctx.fillStyle = water;
+            ctx.fillRect(a, HORIZON_Y, b - a, H - HORIZON_Y);
+            ctx.lineWidth = 1.5;
+            for (let i = 0; i < 70; i++) {
+                const h = (k) => ThemeKit.hash(i * 3.1 + z.startX * 0.001 + k);
+                const wx = z.startX + h(1) * (z.endX - z.startX);
+                const y = trussBot + 14 + h(2) * (H - trussBot - 14);
+                const sx = this.worldToScreen(wx);
+                ctx.strokeStyle = `rgba(190,225,255,${0.12 + 0.22 * Math.abs(Math.sin(t * 1.4 + i))})`;
+                ctx.beginPath();
+                ctx.moveTo(sx, y);
+                ctx.lineTo(sx + 14 + h(3) * 22, y);
+                ctx.stroke();
+            }
+
+            // Boats chugging along the river, each with a running light and a wake.
+            for (let i = 0; i < 3; i++) {
+                const len = z.endX - z.startX;
+                const wx = z.startX + (((ThemeKit.hash(i + 11) * len + t * (24 + i * 9) * (i % 2 ? -1 : 1)) % len) + len) % len;
+                const sx = this.worldToScreen(wx), by = trussBot + 26 + i * 15 + Math.sin(t * 2 + i) * 1.5;
+                ctx.fillStyle = i % 2 ? '#3c5a70' : '#5a3a3a';
+                ctx.beginPath();
+                ctx.moveTo(sx - 20, by);
+                ctx.lineTo(sx + 22, by);
+                ctx.lineTo(sx + 15, by + 8);
+                ctx.lineTo(sx - 15, by + 8);
+                ctx.closePath();
+                ctx.fill();
+                ctx.fillStyle = '#c9d4dc';
+                ctx.fillRect(sx - 6, by - 8, 12, 8);
+                ctx.fillStyle = '#ffd54f';
+                ctx.fillRect(sx + (i % 2 ? -18 : 18), by - 2, 3, 3);
+                ctx.strokeStyle = 'rgba(210,235,255,0.3)';
+                ctx.beginPath();
+                ctx.moveTo(sx - (i % 2 ? -20 : 20), by + 8);
+                ctx.lineTo(sx - (i % 2 ? -52 : 52), by + 10);
+                ctx.stroke();
+            }
+
+            // Deck: steel plating over a truss with X-bracing.
+            ctx.fillStyle = '#4d6270';
+            ctx.fillRect(a, deckTop, b - a, deckBot - deckTop);
+            ctx.fillStyle = '#90a4ae';
+            ctx.fillRect(a, TRACK_BACK - 9, b - a, 5);
+            ctx.fillRect(a, TRACK_FRONT + 4, b - a, 5);
+            ctx.fillStyle = '#34444f';
+            ctx.fillRect(a, deckBot, b - a, trussBot - deckBot);
+            ctx.strokeStyle = '#7f93a3';
+            ctx.lineWidth = 2;
+            const bay = 44;
+            const k0 = Math.floor((a - sx1) / bay) - 1;
+            ctx.beginPath();
+            for (let k = k0; sx1 + k * bay < b + bay; k++) {
+                const x = sx1 + k * bay;
+                ctx.moveTo(x, deckBot);
+                ctx.lineTo(x + bay, trussBot);
+                ctx.moveTo(x + bay, deckBot);
+                ctx.lineTo(x, trussBot);
+            }
+            ctx.stroke();
+            ctx.fillStyle = '#9fb3c1';
+            ctx.fillRect(a, deckBot, b - a, 3);
+            ctx.fillRect(a, trussBot - 3, b - a, 3);
+
+            // Piers: concrete columns sinking into the river with foam at the base.
+            for (const tx of z.towers) {
+                const sx = this.worldToScreen(tx);
+                ctx.fillStyle = '#56646e';
+                ctx.beginPath();
+                ctx.moveTo(sx - 30, trussBot);
+                ctx.lineTo(sx + 30, trussBot);
+                ctx.lineTo(sx + 38, H);
+                ctx.lineTo(sx - 38, H);
+                ctx.closePath();
+                ctx.fill();
+                ctx.fillStyle = 'rgba(0,0,0,0.25)';
+                ctx.fillRect(sx + 12, trussBot, 18, H - trussBot);
+                ctx.strokeStyle = `rgba(225,240,255,${0.35 + 0.2 * Math.sin(t * 2)})`;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.ellipse(sx, H - 14, 46 + Math.sin(t * 2) * 3, 5, 0, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // Main cables: parabolic sag between tower saddles, backstays down to the deck.
+            const cableY = (u) => lowY - (lowY - topY) * (2 * u - 1) * (2 * u - 1);
+            const towerX = z.towers.map(tx => this.worldToScreen(tx));
+            const hangers = [];
+            const cable = (x0, y0, x1, y1, yAt) => {
+                ctx.beginPath();
+                for (let i = 0; i <= 28; i++) {
+                    const u = i / 28;
+                    const x = x0 + (x1 - x0) * u, y = yAt(u, x);
+                    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+                }
+                ctx.stroke();
+            };
+            ctx.lineCap = 'round';
+            for (const [w, col] of [[5, '#6c7f8c'], [2.4, '#d3dde4']]) {
+                ctx.lineWidth = w;
+                ctx.strokeStyle = col;
+                for (let i = 0; i < towerX.length - 1; i++) cable(towerX[i], topY, towerX[i + 1], topY, (u) => cableY(u));
+                const last = towerX.length - 1;
+                cable(sx1, deckTop, towerX[0], topY, (u, x) => deckTop + (topY - deckTop) * u + 0);
+                cable(towerX[last], topY, sx2, deckTop, (u) => topY + (deckTop - topY) * u);
+            }
+            // Hangers (and warm lamps) along every span and backstay.
+            ctx.lineWidth = 1.5;
+            const hang = (xa, ya, xb, yb, yAt) => {
+                const n = Math.max(1, Math.floor(Math.abs(xb - xa) / 34));
+                for (let i = 1; i < n; i++) {
+                    const u = i / n, x = xa + (xb - xa) * u, y = yAt(u);
+                    ctx.strokeStyle = '#aab7c0';
+                    ctx.beginPath();
+                    ctx.moveTo(x, y);
+                    ctx.lineTo(x, deckTop);
+                    ctx.stroke();
+                    ctx.fillStyle = 'rgba(255,213,79,0.2)';
+                    ctx.beginPath();
+                    ctx.arc(x, deckTop - 3, 7, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#ffd54f';
+                    ctx.fillRect(x - 1.5, deckTop - 5, 3, 3);
+                }
+            };
+            for (let i = 0; i < towerX.length - 1; i++) hang(towerX[i], topY, towerX[i + 1], topY, (u) => cableY(u));
+            hang(sx1, deckTop, towerX[0], topY, (u) => deckTop + (topY - deckTop) * u);
+            hang(towerX[towerX.length - 1], topY, sx2, deckTop, (u) => topY + (deckTop - topY) * u);
+            ctx.lineCap = 'butt';
+
+            // Far tower legs, set slightly behind and darker than the near ones.
+            for (const sx of towerX) this.bridgeTowerShape(ctx, sx + 13, '#2b3a45', '#3a4b58', t);
+            ctx.restore();
+        }
+    }
+
+    // After the trains: the near leg of each tower, so trains slide behind it as they pass.
+    drawBridgeTowers(ctx) {
+        const W = this.canvas.width;
+        const t = Date.now() / 1000;
+        for (const z of this.bridgeZones) {
+            for (const tx of z.towers) {
+                const sx = this.worldToScreen(tx);
+                if (sx < -60 || sx > W + 60) continue;
+                this.bridgeTowerShape(ctx, sx, '#5d7280', '#7d93a1', t);
+            }
+        }
+    }
+
+    // One tapered art-deco tower leg from the river up past the cables, with a beacon.
+    bridgeTowerShape(ctx, sx, body, trim, t) {
+        const H = this.canvas.height, w = 22;
+        ctx.fillStyle = body;
+        ctx.beginPath();
+        ctx.moveTo(sx - w, H);
+        ctx.lineTo(sx - w * 0.62, 22);
+        ctx.lineTo(sx - w * 0.42, 12);
+        ctx.lineTo(sx, 3);
+        ctx.lineTo(sx + w * 0.42, 12);
+        ctx.lineTo(sx + w * 0.62, 22);
+        ctx.lineTo(sx + w, H);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = trim;
+        ctx.fillRect(sx - w * 0.62, 22, w * 0.3, H);         // lit edge
+        for (const y of [70, 130, 190]) {                    // cross-beam bands
+            ctx.fillRect(sx - w * (0.7 + y / 700), y, w * (1.4 + y / 350), 5);
+        }
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(sx + w * 0.2, 22, w * 0.4, H);          // shaded edge
+        ctx.fillStyle = Math.sin(t * 3) > 0 ? '#ff5252' : '#6b1f1f';   // aviation light
+        ctx.fillRect(sx - 2, 0, 4, 4);
+    }
+
     drawTunnelEffect(ctx) {
         const W     = this.canvas.width;
         const ceilY  = TRACK_BACK - TRAIN_HEIGHT - 5;  // ≈182 — just above the back train
@@ -2521,7 +2740,8 @@ class TrainGame {
         // ── City-specific ground, street & pillars ───────────────────────────
         if (theme === 'city') {
             this.drawCityGround(ctx);
-            for (const car of this.cars) this.drawCar(ctx, car);
+            this.drawBridgeSpan(ctx);
+            for (const car of this.cars) if (!this.inBridge(car.x, 60)) this.drawCar(ctx, car);
         }
 
         // ── Mountain ground ──────────────────────────────────────────────────
@@ -2652,6 +2872,7 @@ class TrainGame {
         if (theme === 'city') {
             this.drawTunnelEffect(ctx);   // draws each visible tunnel zone clipped to its bounds
             this.drawTunnelPortals(ctx);  // portals on top so jambs always crisp at the edges
+            this.drawBridgeTowers(ctx);   // near tower legs pass in front of the trains
         }
 
         // ── End vertical camera shift ──────────────────────────────────────
