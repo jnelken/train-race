@@ -182,6 +182,49 @@ registerTheme({
         },
 
         drawZones(ctx, state, game, pass) {
+            // Water rushing past the train: streaks drift along each current in front of the
+            // cars, so a tailwind carries you along and a headwind visibly rushes at you.
+            if (pass === 'over') {
+                const t = Date.now() / 1000;
+                const vis = ThemeKit.visible(game, 120);
+                for (const z of state.zones) {
+                    if (z.x1 < vis.x0 || z.x0 > vis.x1) continue;
+                    const len = z.x1 - z.x0;
+                    const col = z.dir > 0 ? '170,255,225' : '255,170,195';
+                    const n = Math.floor(len / 22);
+                    ctx.lineCap = 'round';
+                    for (let i = 0; i < n; i++) {
+                        const h = (k) => ThemeKit.hash(z.x0 * 0.013 + i * 7.1 + k);
+                        const L = 40 + h(1) * 90;
+                        const x = z.x0 + ((((h(2) * len + z.dir * (150 + h(3) * 90) * t) % len) + len) % len);
+                        const head = x, tail = x - z.dir * L;
+                        const lo = Math.min(head, tail), hi = Math.max(head, tail);
+                        if (hi < vis.x0 || lo > vis.x1) continue;
+                        const edge = Math.min(Math.min(x - z.x0, z.x1 - x) / 70, 1);
+                        if (edge <= 0) continue;
+                        const y = TRACK_BACK - 46 + h(4) * 112 - game.getElevation(x) + Math.sin(t * 3 + i) * 2;
+                        const sh = ThemeKit.sx(game, head), st = ThemeKit.sx(game, tail);
+                        const grad = ctx.createLinearGradient(st, 0, sh, 0);
+                        grad.addColorStop(0, `rgba(${col},0)`);
+                        grad.addColorStop(1, `rgba(${col},${0.75 * edge})`);
+                        ctx.strokeStyle = grad;
+                        ctx.lineWidth = 1.5 + h(5) * 2;
+                        ctx.beginPath();
+                        ctx.moveTo(st, y);
+                        ctx.quadraticCurveTo((st + sh) / 2, y + Math.sin(t * 4 + i * 1.3) * 3, sh, y);
+                        ctx.stroke();
+                        if (h(6) > 0.78) {   // the odd bubble tumbling along
+                            ctx.strokeStyle = `rgba(230,250,255,${0.7 * edge})`;
+                            ctx.lineWidth = 1;
+                            ctx.beginPath();
+                            ctx.arc(sh, y - 5 + Math.sin(t * 5 + i) * 3, 1.8 + h(7) * 2, 0, Math.PI * 2);
+                            ctx.stroke();
+                        }
+                    }
+                    ctx.lineCap = 'butt';
+                }
+                return;
+            }
             if (pass !== 'ground') return;
             const t = Date.now() / 1000;
             for (const z of state.zones) {

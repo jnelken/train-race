@@ -1741,7 +1741,7 @@ class TrainGame {
         const W = this.canvas.width, H = this.canvas.height;
         const step = 4;
         const playerElev = this.getElevation(this.train.worldX + TRAIN_WIDTH / 2);
-        const surfaceY = TRACK_FRONT + 6 - playerElev;
+        const surfaceY = HORIZON_Y - playerElev;
         const grad = ctx.createLinearGradient(0, surfaceY - 40, 0, surfaceY + 280);
         grad.addColorStop(0,   '#f7c6e0');
         grad.addColorStop(0.35,'#e8d4f8');
@@ -1752,7 +1752,7 @@ class TrainGame {
         for (let sx = 0; sx <= W; sx += step) {
             const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
             const elev = this.getElevation(worldX);
-            const gy = TRACK_FRONT + 6 - elev;
+            const gy = HORIZON_Y - elev;
             if (sx === 0) ctx.moveTo(sx, gy);
             else          ctx.lineTo(sx, gy);
         }
@@ -1760,7 +1760,7 @@ class TrainGame {
         ctx.lineTo(0, H + this.visualAmpMax() + 400);
         ctx.closePath();
         ctx.fill();
-        this.drawGroundContours(ctx, W, TRACK_FRONT + 6);
+        this.drawGroundContours(ctx, W, HORIZON_Y);
     }
 
     // Flame shoots to the LEFT from (x, y) — the back of a rightward-moving train
@@ -1827,8 +1827,8 @@ class TrainGame {
 
         // ── Row 10: axle attachment dots (matching sprite row 10) ─────────────
         if (!isCity) {
-            ctx.fillRect(cx + p*2,  cy + p*10, p, p);
-            ctx.fillRect(cx + p*36, cy + p*10, p, p);
+            ctx.fillRect(cx + p*9,  cy + p*10, p, p);   // axle attachments at the bogie midpoints
+            ctx.fillRect(cx + p*30, cy + p*10, p, p);
 
             // ── Wheels: animated, reuse locomotive wheel sprite ──────────────────
             const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
@@ -1986,7 +1986,7 @@ class TrainGame {
         // Anchor gradient to the player's ground level so it always looks good
         // regardless of camera elevation — green at surface, brown below
         const playerElev = this.getElevation(this.train.worldX + TRAIN_WIDTH / 2);
-        const surfaceY = TRACK_FRONT + 6 - playerElev;
+        const surfaceY = HORIZON_Y - playerElev;
         const grad = ctx.createLinearGradient(0, surfaceY - 30, 0, surfaceY + 300);
         // Snow line: the higher the train climbs, the whiter the ground gets.
         const snow = clamp01((playerElev - 300) / 900);
@@ -2001,7 +2001,7 @@ class TrainGame {
         for (let sx = 0; sx <= W; sx += step) {
             const worldX = sx + this.cameraX - this.canvas.width / 2 + TRAIN_WIDTH / 2;
             const elev = this.getElevation(worldX);
-            const gy = TRACK_FRONT + 6 - elev;
+            const gy = HORIZON_Y - elev;
             if (sx === 0) ctx.moveTo(sx, gy);
             else          ctx.lineTo(sx, gy);
         }
@@ -2010,7 +2010,7 @@ class TrainGame {
         ctx.lineTo(0, H + this.visualAmpMax());
         ctx.closePath();
         ctx.fill();
-        this.drawGroundContours(ctx, W, TRACK_FRONT + 6);
+        this.drawGroundContours(ctx, W, HORIZON_Y);
     }
 
     trackColors(candy = false) {
@@ -2448,7 +2448,7 @@ class TrainGame {
         // ── Mid-layer: trees / lollipops ─────────────────────────────────────
         if (theme === 'sahara' || theme === 'mountain' || theme === 'candy') {
             const tLayer = this.layers.find(l => l.name === 'trees');
-            const midVParallax = theme === 'candy' ? -this.cameraY * (1 - tLayer.speed) : 0;
+            const midVParallax = 0;   // anchored to the terrain: a parallax shift here made trees float
             if (midVParallax) ctx.translate(0, midVParallax);
             for (const obj of tLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.6;
@@ -2506,7 +2506,7 @@ class TrainGame {
         // Sahara/mountain/candy foreground props
         if (theme === 'sahara' || theme === 'mountain' || theme === 'candy') {
             const rLayer = this.layers.find(l => l.name === 'rocks');
-            const fgVParallax = theme === 'candy' ? -this.cameraY * (1 - rLayer.speed) : 0;
+            const fgVParallax = 0;    // anchored to the terrain (see midVParallax)
             if (fgVParallax) ctx.translate(0, fgVParallax);
             for (const obj of rLayer.objects) {
                 const sx = obj.x - this.cameraX * 0.9;
