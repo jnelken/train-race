@@ -20,9 +20,9 @@ const THEMES       = ['sahara', 'city', 'mountain', 'candy'];
 // that returns to 0 at the finish. The grade stays gentle (~0.1–0.17) because
 // the hill is spread over 20–30k units, so a trailing NPC (≤ ~390 units behind)
 // is only ~65 px lower than the player and stays on screen.
-const MOUNTAIN_PEAK_HEIGHT = 1600;              // default summit height (px)
-const MOUNTAIN_PEAK_MIN    = 1400;              // summit height range per race
-const MOUNTAIN_PEAK_MAX    = 1800;
+const MOUNTAIN_PEAK_HEIGHT = 3000;              // default summit height (px), fallback only
+const MOUNTAIN_GRADE_MIN   = 0.24;              // average climb grade (rise/run) per race: the summit
+const MOUNTAIN_GRADE_MAX   = 0.30;              // height follows from it, so every race length is steep
 const MOUNTAIN_APEX_ROUND  = 500;               // radius that rounds the summit (no kink)
 const MOUNTAIN_SIGMA       = 180;               // physics-slope width (dead path while TRACK_SLOPE_PHYSICS is off)
 
@@ -74,7 +74,7 @@ const SLOPE_SPEED_MIN  = 0.55;
 const SLOPE_SPEED_MAX  = 1.6;
 const SLOPE_SPEED_LERP = 0.15;   // per-frame smoothing so crests don't snap the speed
 const SLOPE_SPEED_GAIN_DEFAULT = 1.2;
-const SLOPE_SPEED_GAIN = { mountain: 2.5, candy: 0.8, sahara: 1.5 };
+const SLOPE_SPEED_GAIN = { mountain: 1.3, candy: 0.8, sahara: 0.9 };
 
 function clamp01(v) { return Math.min(1, Math.max(0, v)); }
 
@@ -140,8 +140,11 @@ function mountainTentSlope(worldX, center, finishX, peakBase) {
 }
 
 function makeMountainProfile(finishLineWorldX) {
-    const peakBase = MOUNTAIN_PEAK_MIN
-        + Math.random() * (MOUNTAIN_PEAK_MAX - MOUNTAIN_PEAK_MIN);
+    // Pick the climb GRADE (so a 30k race is as steep as a 20k one), then derive the summit.
+    const hs = Math.max(finishLineWorldX / 2, 1);
+    const dmax = Math.sqrt(hs * hs + MOUNTAIN_APEX_ROUND * MOUNTAIN_APEX_ROUND) - MOUNTAIN_APEX_ROUND;
+    const peakBase = dmax * (MOUNTAIN_GRADE_MIN
+        + Math.random() * (MOUNTAIN_GRADE_MAX - MOUNTAIN_GRADE_MIN));
     return {
         center: finishLineWorldX / 2,   // symmetric: finish elevation == start elevation (0)
         finishX: finishLineWorldX,
@@ -226,16 +229,16 @@ function getCandyPhysicsSlope(worldX, wave) {
 
 // ─── Sahara / valley: a few tiny gaussian bumps per race ───────────────────
 function makeSaharaHills(finishLineWorldX) {
-    const count = 2 + Math.floor(Math.random() * 3); // 2–4
+    const count = 4 + Math.floor(Math.random() * 3); // 4–6 big rolling hills
     const hills = [];
-    const margin = 500;
+    const margin = 800;
     const span = Math.max(finishLineWorldX - margin * 2, 1000);
     for (let i = 0; i < count; i++) {
         const t = (i + 0.35 + Math.random() * 0.3) / count;
         hills.push({
             center: margin + t * span + (Math.random() - 0.5) * 200,
-            sigma:  150 + Math.random() * 130,   // 150–280
-            amp:    12 + Math.random() * 16,     // 12–28
+            sigma:  230 + Math.random() * 150,   // 230–380 wide
+            amp:    48 + Math.random() * 48,     // 48–96 tall: climbs of ~10–15°, readable on a wide screen
         });
     }
     return hills;
@@ -549,6 +552,7 @@ class TrainGame {
             this.mechState = mech && mech.init ? mech.init(this) : null;
         }
         this.applyThemePhysics();
+        this.marks = { player: [], opponent: [] };   // hazard residue stuck to each train
         this.levelName = this.def ? this.def.name : (LEGACY_THEME_NAMES[this.theme] || this.theme);
         this.levelHint = this.def ? (this.def.hint || '') : '';
 
@@ -642,6 +646,85 @@ class TrainGame {
             body.vx -= slope * MOUNTAIN_GRAVITY;
         }
         body.vx = Math.min(Math.max(body.vx, minVx), maxVx);
+    }
+
+    // ── Hazard residue ─────────────────────────────────────────────────────
+    // A level's mechanic.marks = { kind, trigger, rate, r:[min,max], y:[min,max], life, hot, style }
+    // makes mud, lava burns, frost... stick to whichever car is over the hazard (the
+    // locomotive is part 0, carts are 1..CART_COUNT). Triggers: 'penalty' (car is being
+    // slowed), 'any' (car is in any zone), 'ambient' (train is moving). Same rules for
+    // both trains; ThemeKit.marks[kind] (themes/registry.js) draws each kind.
+    updateMarks() {
+        const mech = this.def && this.def.mechanic;
+        const spec = mech && mech.marks;
+        if (!spec) return;
+        const t = this.gameState.time;
+        this._markTick = (this._markTick || 0) + 1;
+        for (const who of ['player', 'opponent']) {
+            const train = who === 'player' ? this.train : this.opponent;
+            if (this._markTick % 60 === 0) {
+                this.marks[who] = this.marks[who].filter(m => t - m.born < m.life);
+            }
+            const list = this.marks[who];
+            for (let part = 0; part <= CART_COUNT; part++) {
+                let x;
+                if (part === 0) x = train.worldX + TRAIN_WIDTH / 2;
+                else {
+                    const cart = train.carts[part - 1];
+                    if (!cart || cart.centerX === 0) continue;  // carts get a position on the first tick
+                    x = cart.centerX;
+                }
+                let p = 0;
+                if (spec.trigger === 'ambient') {
+                    p = train.vx > 1 ? spec.rate : 0;
+                } else if (mech.speedMult) {
+                    const k = mech.speedMult(this.mechState, x, t, this);
+                    p = spec.trigger === 'any' ? spec.rate * Math.abs(1 - k) : (k < 1 ? spec.rate * (1 - k) : 0);
+                }
+                if (p > 0 && Math.random() < p) this.addMark(list, part, spec, t);
+            }
+        }
+    }
+
+    addMark(list, part, spec, t) {
+        const perPart = spec.perPart ?? 14;
+        let count = 0, oldest = -1;
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].part !== part) continue;
+            if (oldest < 0) oldest = i;
+            count++;
+        }
+        if (count >= perPart && oldest >= 0) list.splice(oldest, 1);
+        list.push({
+            part,
+            x: 8 + Math.random() * (TRAIN_WIDTH - 16),
+            y: spec.y[0] + Math.random() * (spec.y[1] - spec.y[0]),
+            r: spec.r[0] + Math.random() * (spec.r[1] - spec.r[0]),
+            kind: spec.kind,
+            style: spec.style || {},
+            born: t,
+            life: spec.life ?? Infinity,
+            hot: spec.hot ?? 0,
+            seed: Math.random() * 1000,
+        });
+    }
+
+    // Draw the residue for one car; (ox, oy) is the car's top-left corner.
+    drawMarksFor(ctx, marks, part, ox, oy) {
+        if (!marks || !marks.length) return;
+        const t = this.gameState.time;
+        for (const m of marks) {
+            if (m.part !== part) continue;
+            const render = ThemeKit.marks[m.kind];
+            if (!render) continue;
+            const age = t - m.born;
+            const fade = m.life === Infinity ? 1 : clamp01((m.life - age) / Math.min(8, m.life * 0.4));
+            if (fade <= 0) continue;
+            ctx.save();
+            ctx.globalAlpha = fade;
+            render(ctx, m, ox + m.x, oy + m.y, age);
+            ctx.restore();
+        }
     }
 
     activeBoostCount() {
@@ -1353,6 +1436,7 @@ class TrainGame {
         if (this.opponent.wheelFrame >= TRAIN_SPRITES.wheels.length) this.opponent.wheelFrame = 0;
 
         this.updateCars();
+        this.updateMarks();
         this.checkFinish();
         this.gameState.time += deltaTime;
 
@@ -1676,6 +1760,7 @@ class TrainGame {
         ctx.lineTo(0, H + this.visualAmpMax() + 400);
         ctx.closePath();
         ctx.fill();
+        this.drawGroundContours(ctx, W, TRACK_FRONT + 6);
     }
 
     // Flame shoots to the LEFT from (x, y) — the back of a rightward-moving train
@@ -1752,19 +1837,21 @@ class TrainGame {
     }
 
     // Draw as many carts as needed to fill past the left (off-screen) edge.
-    drawCarts(ctx, sx, cy, stripeColor, windowColor, wheelFrame, isCity) {
+    drawCarts(ctx, sx, cy, stripeColor, windowColor, wheelFrame, isCity, marks) {
         for (let i = 0; i < 12; i++) {
             const cx = sx - (i + 1) * TRAIN_WIDTH;
             if (cx + TRAIN_WIDTH < 0) break;  // fully off-screen left — stop
             this.drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame, isCity);
+            this.drawMarksFor(ctx, marks, i + 1, cx, cy);
         }
     }
 
     // Draw carts following the mountain terrain — each cart rendered from its
     // own simulated tie-physics state (elevation + pitch), so the consist
     // articulates over crests and can trail the locomotive through the air.
-    drawMountainCarts(ctx, train, baseTrackY, stripeColor, windowColor, wheelFrame) {
-        for (const cart of train.carts) {
+    drawMountainCarts(ctx, train, baseTrackY, stripeColor, windowColor, wheelFrame, marks) {
+        for (let ci = 0; ci < train.carts.length; ci++) {
+            const cart = train.carts[ci];
             const cartSX = this.worldToScreen(cart.centerX - TRAIN_WIDTH / 2);
             if (cartSX + TRAIN_WIDTH < 0) break;
             // Pivot on the rail contact point (bottom-center of cart)
@@ -1773,6 +1860,7 @@ class TrainGame {
             ctx.rotate(cart.angle);
             ctx.translate(-TRAIN_WIDTH / 2, -TRAIN_HEIGHT);
             this.drawSingleCart(ctx, 0, 0, stripeColor, windowColor, wheelFrame, false);
+            this.drawMarksFor(ctx, marks, ci + 1, 0, 0);
             ctx.restore();
         }
     }
@@ -1840,6 +1928,57 @@ class TrainGame {
         ctx.fillRect(0, STREET_Y - 4,  W, 2);
     }
 
+    // Contour lines under the surface plus a bright rim: parallel curves along a
+    // hilltop make the incline readable at a glance, even on a wide screen.
+    drawGroundContours(ctx, W, surfaceBase) {
+        const step = 6;
+        const pts = [];
+        for (let sx = -step; sx <= W + step; sx += step) {
+            const wx = sx + this.cameraX - W / 2 + TRAIN_WIDTH / 2;
+            pts.push([sx, surfaceBase - this.getElevation(wx)]);
+        }
+        const trace = (dy) => {
+            ctx.beginPath();
+            pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y + dy) : ctx.moveTo(x, y + dy)));
+            ctx.stroke();
+        };
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = 'rgba(0,0,0,0.10)';
+        ctx.lineWidth = 2;
+        for (const dy of [22, 52, 96, 150]) trace(dy);
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 3;
+        trace(1);
+        ctx.strokeStyle = 'rgba(0,0,0,0.22)';
+        ctx.lineWidth = 1.5;
+        trace(4);
+    }
+
+    // Sahara used to draw no ground at all (the trains just moved against a flat
+    // backdrop). Now the dunes are a real silhouette that follows the terrain.
+    drawSaharaGround(ctx) {
+        const W = this.canvas.width, H = this.canvas.height;
+        const playerElev = this.getElevation(this.train.worldX + TRAIN_WIDTH / 2);
+        const surfaceY = HORIZON_Y - playerElev;
+        const grad = ctx.createLinearGradient(0, surfaceY, 0, surfaceY + 240);
+        grad.addColorStop(0,    '#dcb86e');  // sunlit sand
+        grad.addColorStop(0.35, '#bd9250');
+        grad.addColorStop(1,    '#7d5f33');  // shadowed sand
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        for (let sx = 0; sx <= W; sx += 4) {
+            const wx = sx + this.cameraX - W / 2 + TRAIN_WIDTH / 2;
+            const gy = HORIZON_Y - this.getElevation(wx);
+            if (sx === 0) ctx.moveTo(sx, gy); else ctx.lineTo(sx, gy);
+        }
+        const bottom = H + this.visualAmpMax() + 400;
+        ctx.lineTo(W, bottom);
+        ctx.lineTo(0, bottom);
+        ctx.closePath();
+        ctx.fill();
+        this.drawGroundContours(ctx, W, HORIZON_Y);
+    }
+
     drawMountainGround(ctx) {
         const W = this.canvas.width, H = this.canvas.height;
         const step = 4;
@@ -1871,6 +2010,7 @@ class TrainGame {
         ctx.lineTo(0, H + this.visualAmpMax());
         ctx.closePath();
         ctx.fill();
+        this.drawGroundContours(ctx, W, TRACK_FRONT + 6);
     }
 
     trackColors(candy = false) {
@@ -2271,7 +2411,7 @@ class TrainGame {
         // Candy lags every far layer by its parallax speed. The giant mountain hill is
         // far taller than that trick can handle, so its far range sinks at most 90 px
         // (instead of the full climb) and stays visible behind the summit.
-        const bgVParallax = theme === 'candy' ? -this.cameraY * (1 - mLayer.speed)
+        const bgVParallax = (theme === 'candy' || theme === 'sahara') ? -this.cameraY * (1 - mLayer.speed)
             : theme === 'mountain' ? Math.min(this.cameraY * mLayer.speed, 90) - this.cameraY
             : 0;
         if (bgVParallax) ctx.translate(0, bgVParallax);
@@ -2285,6 +2425,9 @@ class TrainGame {
             }
         }
         if (bgVParallax) ctx.translate(0, -bgVParallax);
+
+        // ── Sahara dunes (a real ground silhouette that follows the hills) ───
+        if (theme === 'sahara') this.drawSaharaGround(ctx);
 
         // ── City-specific ground, street & pillars ───────────────────────────
         if (theme === 'city') {
@@ -2519,6 +2662,7 @@ class TrainGame {
         }
         ctx.closePath();
         ctx.fill();
+        if (this.hasElevatedTrack()) this.drawGroundContours(ctx, W, HORIZON_Y);
         if (this.def.drawGround) this.def.drawGround(ctx, this, W, H);
     }
 
@@ -2532,8 +2676,9 @@ class TrainGame {
         const wheelFrame = opp ? body.wheelFrame : this.wheelFrame;
         const flame = opp ? body.boosting : this.activeBoostCount() > 0;
         const sx = this.worldToScreen(body.worldX);
+        const marks = this.marks[opp ? 'opponent' : 'player'];
         if (elevated) {
-            this.drawMountainCarts(ctx, body, baseY, stripe, win, wheelFrame);
+            this.drawMountainCarts(ctx, body, baseY, stripe, win, wheelFrame, marks);
             ctx.save();
             ctx.translate(sx + TRAIN_WIDTH / 2, baseY - body.elev);
             ctx.rotate(body.angle);
@@ -2541,13 +2686,15 @@ class TrainGame {
             if (flame) this.drawFlame(ctx, 0, 44);
             this.renderer.renderSprite(sprites.idle[0], 0, 0);
             this.renderer.renderSprite(sprites.wheels[Math.floor(wheelFrame)], 0, 40);
+            this.drawMarksFor(ctx, marks, 0, 0, 0);
             ctx.restore();
         } else {
             const y = body.y;
-            this.drawCarts(ctx, sx, y, stripe, win, wheelFrame, false);
+            this.drawCarts(ctx, sx, y, stripe, win, wheelFrame, false, marks);
             if (flame) this.drawFlame(ctx, sx, y + 44);
             this.renderer.renderSprite(sprites.idle[0], sx, y);
             this.renderer.renderSprite(sprites.wheels[Math.floor(wheelFrame)], sx, y + 40);
+            this.drawMarksFor(ctx, marks, 0, sx, y);
         }
     }
 

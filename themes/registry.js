@@ -105,3 +105,116 @@ const ThemeKit = {
         return { phase: 'active', t: (c - idle - warn) / active };
     },
 };
+
+// ── Hazard residue renderers ───────────────────────────────────────────────
+// A level's mechanic.marks makes these stick to the trains (see updateMarks in game.js).
+// Each renderer draws one mark at (x, y) on a car; m.r is its size, age is seconds since it
+// landed. Add a kind here (or from a theme file) and name it in mechanic.marks.kind.
+ThemeKit.marks = {
+    // Mud splatter: a dark blob ringed by flung droplets.
+    mud(ctx, m, x, y) {
+        const h = (k) => ThemeKit.hash(m.seed + k);
+        ctx.fillStyle = m.style.c1 || '#5b3d22';
+        ctx.beginPath();
+        ctx.ellipse(x, y, m.r, m.r * 0.75, h(0) * 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = m.style.c2 || '#7a5632';
+        for (let i = 0; i < 5; i++) {
+            const a = h(i + 1) * 6.28, d = m.r * (0.8 + h(i + 9));
+            ctx.beginPath();
+            ctx.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, 0.8 + h(i + 5) * 1.8, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.fillStyle = 'rgba(255,230,190,0.22)';
+        ctx.fillRect(x - m.r * 0.4, y - m.r * 0.5, m.r * 0.5, 1.5);
+    },
+
+    // Molten lava splat that cools to a permanent scorch mark: a charred core and soot
+    // halo stay behind; the glowing orange fades over m.hot seconds.
+    lava(ctx, m, x, y, age) {
+        const h = (k) => ThemeKit.hash(m.seed + k);
+        const glow = Math.max(0, Math.min(1, 1 - age / Math.max(m.hot, 0.01)));
+        ctx.fillStyle = 'rgba(25,12,8,0.5)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, m.r * 1.9, m.r * 1.4, h(1) * 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#1c100c';
+        ctx.beginPath();
+        ctx.ellipse(x, y, m.r * 1.1, m.r * 0.85, h(2) * 3, 0, Math.PI * 2);
+        ctx.fill();
+        for (let i = 0; i < 6; i++) {
+            const a = h(i + 3) * 6.28, d = m.r * (1.2 + h(i + 9) * 1.1);
+            ctx.fillStyle = i % 2 ? '#1c100c' : 'rgba(25,12,8,0.6)';
+            ctx.fillRect(x + Math.cos(a) * d, y + Math.sin(a) * d, 1.5 + h(i + 13) * 2, 1.5 + h(i + 17) * 2);
+        }
+        if (glow > 0) {
+            ctx.fillStyle = `rgba(255,${Math.round(90 + 130 * glow)},30,${0.35 + 0.65 * glow})`;
+            ctx.beginPath();
+            ctx.ellipse(x, y, m.r * (0.7 + 0.4 * glow), m.r * (0.55 + 0.3 * glow), h(2) * 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `rgba(255,240,170,${glow})`;
+            ctx.beginPath();
+            ctx.arc(x - m.r * 0.15, y - m.r * 0.15, m.r * 0.35 * glow + 0.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `rgba(255,150,40,${0.8 * glow})`;
+            ctx.fillRect(x + m.r * 0.2, y, 2, m.r * (1.2 + 2 * (1 - glow)));
+        }
+    },
+
+    // Frost: a pale star-shaped crust with a glint.
+    frost(ctx, m, x, y, age) {
+        const h = (k) => ThemeKit.hash(m.seed + k);
+        ctx.fillStyle = 'rgba(236,248,255,0.85)';
+        ctx.strokeStyle = 'rgba(150,200,235,0.85)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let i = 0; i < 12; i++) {
+            const a = (i / 12) * 6.283 + h(0);
+            const rr = m.r * (i % 2 ? 0.45 : 1) * (0.8 + h(i + 1) * 0.4);
+            const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr * 0.8;
+            i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255,255,255,${0.5 + 0.5 * Math.sin(age * 4 + m.seed)})`;
+        ctx.fillRect(x - 1, y - 1, 2, 2);
+    },
+
+    // A strand of kelp snagged on the car, swaying, with a bubble rising off it.
+    kelp(ctx, m, x, y, age) {
+        const sway = Math.sin(age * 3 + m.seed) * 2.5;
+        ctx.strokeStyle = m.style.c1 || '#2f8a4a';
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.bezierCurveTo(x + sway + 3, y + m.r * 0.8, x - sway - 3, y + m.r * 1.6, x + sway, y + m.r * 2.4);
+        ctx.stroke();
+        ctx.lineCap = 'butt';
+        ctx.strokeStyle = 'rgba(220,245,255,0.7)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x + 5, y - ((age * 9) % 12), 1.6, 0, Math.PI * 2);
+        ctx.stroke();
+    },
+
+    // Scratches and a small dent, e.g. micrometeor hits.
+    scratch(ctx, m, x, y) {
+        const h = (k) => ThemeKit.hash(m.seed + k);
+        const a = h(0) * 3.14;
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 2; i++) {
+            const o = (i - 0.5) * 3;
+            ctx.beginPath();
+            ctx.moveTo(x + Math.cos(a) * -m.r + o, y + Math.sin(a) * -m.r + o);
+            ctx.lineTo(x + Math.cos(a) * m.r + o, y + Math.sin(a) * m.r + o);
+            ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(40,45,60,0.55)';
+        ctx.beginPath();
+        ctx.arc(x, y, m.r * 0.22, 0, Math.PI * 2);
+        ctx.fill();
+    },
+};
