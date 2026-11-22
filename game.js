@@ -48,7 +48,7 @@ const OPPONENT_SPEED_RESPONSIVENESS = 0.2;      // match player accel when seeki
 const TRAIN_FALL_GRAVITY = 0.025;  // px/frame² downward acceleration while airborne
 const TRAIN_ANGLE_LERP   = 0.18;   // per-frame pitch smoothing toward target angle
 const AIRBORNE_MAX_PITCH = 0.55;   // rad (~31°) — pitch clamp during flight
-const CART_COUNT         = 12;     // trailing carts simulated & drawn per train
+const CART_COUNT         = 5;      // trailing carts per train: with the locomotive each train is 6 cars long
 const FX_MAX             = 420;    // cap on live hazard particles
 
 // ── Stations ──────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ const FX_MAX             = 420;    // cap on live hazard particles
 // are in the same units as train.worldX (the locomotive's left edge).
 const START_RAMP_SECONDS = 5;      // trains pull out from a standstill and reach cruise speed by now
 const START_BOOST_CAP    = 8;      // taps that can queue during the pull-out (they fire at full speed)
-const STATION_BEHIND     = 1500;   // platform length behind the stop mark (alongside the cars)
+const STATION_BEHIND     = 1100;   // platform length behind the stop mark (a 6-car train is 960 px)
 const STATION_AHEAD      = 260;    // platform length past the locomotive
 const FINISH_STOP_DIST   = 900;    // the locomotive halts this far past the finish line
 const STATION_ZOOM       = 0.72;   // the camera pulls back this far at the end station
@@ -77,7 +77,7 @@ const PLAYER_BOOST_PER_TOKEN   = 0.05; // each press: +5% for 1s, uncapped stack
 const OPPONENT_SPEED_CEILING   = 4.5;
 // The opponent drives at one constant speed for the whole race: no slant, no boost
 // budget and no difficulty scaling. Hills still modulate its EFFECTIVE speed (same
-// slopeSpeedMult as the player), and it only eases off if it gets far ahead.
+// slopeSpeedMult as the player). It never slows to let the player catch up.
 const OPPONENT_CONSTANT_SPEED  = 4.5;
 
 // ─── Hills modulate effective speed ─────────────────────────────────────────
@@ -1131,9 +1131,9 @@ class TrainGame {
             }
         };
         const fin = this.stations.finish;
-        make(fin, 'front', 22, fin.stopX - 1300, fin.stopX + 200);
-        make(fin, 'back', 12, fin.stopX - 1300, fin.stopX + 200);
-        make(this.stations.start, 'front', 10, -1200, 140);
+        make(fin, 'front', 12, fin.stopX - 900, fin.stopX + 200);
+        make(fin, 'back', 7, fin.stopX - 900, fin.stopX + 200);
+        make(this.stations.start, 'front', 6, -900, 140);
         return out;
     }
 
@@ -1453,7 +1453,7 @@ class TrainGame {
 
     // Draw the door overlay (shut or open) for the locomotive at (x, y) = its top-left.
     drawLocoDoors(ctx, x, y) {
-        TRAIN_RIG.drawDoors(ctx, x, y, this._doors);
+        TRAIN_RIG.drawDoors(ctx, x, y, this._doors, this._doorTint);
     }
 
     adjustOpponentDifficulty(result) {
@@ -1976,13 +1976,12 @@ class TrainGame {
             // Constant-speed opponent (see OPPONENT_CONSTANT_SPEED). Slant, boost budget and
             // adaptive difficulty no longer change its speed; boosting stays off so the flame
             // never shows without an effect. It pulls out of the station on the same ramp.
-            const gap = O.worldX - T.worldX;
             O.boosting = false;
             const oppEffectiveTop = Math.min(OPPONENT_CONSTANT_SPEED, OPPONENT_SPEED_CEILING);
 
-            // Flat-ground AI target: the constant speed, or 40% of it when far ahead.
-            const tooFarAhead = this.canvas.width * 0.55;
-            const targetSpeed = (gap > tooFarAhead ? oppEffectiveTop * 0.4 : oppEffectiveTop) * ramp;
+            // Flat-ground AI target: always the constant speed. It never eases off, however far
+            // ahead of the player it gets.
+            const targetSpeed = oppEffectiveTop * ramp;
 
             const diff = targetSpeed - O.vx;
             if (!O.initialRampDone) {
@@ -2403,12 +2402,12 @@ class TrainGame {
             const wf = Math.floor(wheelFrame) % TRAIN_SPRITES.wheels.length;
             this.renderer.renderSprite(TRAIN_SPRITES.wheels[wf], cx, cy + p*TRAIN_RIG.wheelRow);
         }
-        TRAIN_RIG.drawDoors(ctx, cx, cy, this._doors);   // doors: always drawn, shut or open
+        TRAIN_RIG.drawDoors(ctx, cx, cy, this._doors, this._doorTint);   // doors: always drawn, shut or open
     }
 
     // Draw as many carts as needed to fill past the left (off-screen) edge.
     drawCarts(ctx, sx, cy, stripeColor, windowColor, wheelFrame, isCity, marks) {
-        for (let i = 0; i < 12; i++) {
+        for (let i = 0; i < CART_COUNT; i++) {
             const cx = sx - (i + 1) * TRAIN_WIDTH;
             if (cx + TRAIN_WIDTH < 0) break;  // fully off-screen left — stop
             this.drawSingleCart(ctx, cx, cy, stripeColor, windowColor, wheelFrame, isCity);
@@ -3207,6 +3206,7 @@ class TrainGame {
         const opponentSX = this.worldToScreen(this.opponent.worldX);
         const oppY = this.opponent.y + oppBob;
         this._doors = this.opponent.doorOpen;
+        this._doorTint = 'opponent';
         if (elevated) {
             this.drawMountainCarts(ctx, this.opponent, TRACK_BACK, '#3498db', '#2980b9', this.opponent.wheelFrame);
             // Pivot on rail contact point (bottom-center of locomotive) using
@@ -3267,6 +3267,7 @@ class TrainGame {
         const trainSX         = this.worldToScreen(this.train.worldX);
         const trainY          = this.train.y + trainBob;
         this._doors           = this.train.doorOpen;
+        this._doorTint        = null;
         const activeBoostsNow = this.activeBoostCount();
         if (elevated) {
             this.drawMountainCarts(ctx, this.train, TRACK_FRONT, '#e74c3c', '#3498db', this.wheelFrame);
@@ -3427,6 +3428,7 @@ class TrainGame {
         const sx = this.worldToScreen(body.worldX);
         const marks = this.marks[opp ? 'opponent' : 'player'];
         this._doors = body.doorOpen;
+        this._doorTint = opp ? 'opponent' : null;
         if (elevated) {
             this.drawMountainCarts(ctx, body, baseY, stripe, win, wheelFrame, marks);
             ctx.save();

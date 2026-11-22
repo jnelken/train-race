@@ -51,6 +51,8 @@ TRAIN_RIG.doors = {
     rowTop: 4, rowBottom: 9,          // opening spans art rows [rowTop, rowBottom)
     leaf: '#59626d', leafEdge: '#b4bcc7', leafDark: '#2c323a', header: '#3a414a',
     glass: '#47a6e8', glassDeep: '#2478b9', glint: '#d9f0ff',
+    // The rival's doors use a deeper blue to match its darker side windows.
+    tints: { opponent: { glass: '#2f86c9', glassDeep: '#1b5a8e', glint: '#bfe3fb' } },
     interior: '#262b38', light: '#ffe2a0',
 };
 // Screen x of each bay's centre, from the car's left edge (where passengers aim for).
@@ -59,8 +61,9 @@ TRAIN_RIG.doorX = TRAIN_RIG.doors.cols.map((c, i) => (c + TRAIN_RIG.doors.widths
 TRAIN_RIG.doorFloorY = TRAIN_RIG.doors.rowBottom * TRAIN_RIG.px;
 
 // Default doors: draw one car's doors at (x, y) = car top-left. Called every frame, shut or not.
-TRAIN_RIG.drawDoors = function (ctx, x, y, open) {
-    const d = TRAIN_RIG.doors, px = TRAIN_RIG.px;
+// `tint` optionally names an entry of TRAIN_RIG.doors.tints to recolour the glass (e.g. 'opponent').
+TRAIN_RIG.drawDoors = function (ctx, x, y, open, tint) {
+    const d = Object.assign({}, TRAIN_RIG.doors, (tint && TRAIN_RIG.doors.tints[tint]) || null), px = TRAIN_RIG.px;
     open = Math.min(1, Math.max(0, open || 0));
     const top = y + d.rowTop * px, h = (d.rowBottom - d.rowTop) * px;
     for (let i = 0; i < d.cols.length; i++) {
