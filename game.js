@@ -124,6 +124,13 @@ function raceLengthForWins(winCount) {
     return Math.min(MAX_FINISH_LINE, BASE_FINISH_LINE + winCount * LENGTH_PER_WIN);
 }
 
+// A level may scale the world: def.speedScale multiplies every train's ground speed and
+// def.lengthScale stretches the course (a 2x/2x level takes as long as a normal one).
+function levelScale(theme, key) {
+    const d = THEME_DEFS[theme];
+    return (d && d[key]) || 1;
+}
+
 // Longer races run faster so duration grows slower than distance.
 // 10k → 1.0× speed, 20k → 1.5×, 30k → 2.0× (half the distance growth).
 function cruiseSpeedForLength(finishLineWorldX) {
@@ -471,6 +478,7 @@ class TrainGame {
 
         // Pick one theme for the whole race (re-randomised on restart)
         this.theme = pickTheme();
+        this.applyRaceLength();
         this.generateRaceTerrain();
 
         this.layers = [
@@ -693,7 +701,7 @@ class TrainGame {
                 if (spec.trigger === 'ambient') {
                     p = train.vx > 1 ? spec.rate : 0;
                 } else if (mech.speedMult) {
-                    const k = mech.speedMult(this.mechState, x, t, this);
+                    const k = mech.speedMult(this.mechState, x, t, this, who);
                     p = spec.trigger === 'any' ? spec.rate * Math.abs(1 - k) : (k < 1 ? spec.rate * (1 - k) : 0);
                 }
                 if (p > 0 && Math.random() < p) this.addMark(list, part, spec, t);
@@ -780,7 +788,7 @@ class TrainGame {
         const R = (a, d) => (a === undefined ? d : Array.isArray(a) ? a[0] + Math.random() * (a[1] - a[0]) : a);
         ThemeKit.eachCar(this, (who, train, part, cx) => {
             if (Math.abs(cx - this.cameraX) > reach) return;
-            const k = mech.speedMult ? mech.speedMult(this.mechState, cx, t, this) : 1;
+            const k = mech.speedMult ? mech.speedMult(this.mechState, cx, t, this, who) : 1;
             const speed = Math.min(Math.max(train.vx, 0) / 4, 1.2);
             for (const sp of specs) {
                 let power = 0;
@@ -791,7 +799,7 @@ class TrainGame {
                 if (Math.random() >= chance) continue;
                 for (let j = 0; j < (sp.n || 1); j++) {
                     const body = sp.at === 'body';
-                    const left = cx - TRAIN_WIDTH / 2;
+                    const left = cx - TRAIN_WIDTH;   // cx is the car's nose; its drawn left edge is a car length back
                     const px = body
                         ? left + TRAIN_RIG.bodyX[0] + Math.random() * (TRAIN_RIG.bodyX[1] - TRAIN_RIG.bodyX[0])
                         : left + TRAIN_RIG.wheelX[Math.floor(Math.random() * TRAIN_RIG.wheelX.length)];
@@ -801,7 +809,7 @@ class TrainGame {
                     const inherit = typeof sp.inherit === 'function' ? sp.inherit(k) : (sp.inherit ?? 1);
                     list.push({
                         kind: sp.kind, who, x: px, h,
-                        vx: train.vx * inherit + R(sp.vx, 0), vy: R(sp.vy, 2), g: sp.g ?? 0.25,
+                        vx: train.vx * this.speedScale() * inherit + R(sp.vx, 0), vy: R(sp.vy, 2), g: sp.g ?? 0.25,
                         age: 0, life: R(sp.life, 0.8), r: R(sp.r, 3), seed: Math.random() * 1000,
                         land: sp.land || 'die', style: sp.style || {},
                     });
@@ -839,7 +847,7 @@ class TrainGame {
         let mult = this.slopeSpeedMult(body);
         const mech = this.def && this.def.mechanic;
         if (mech && mech.speedMult && this.raceStarted) {
-            let k = mech.speedMult(this.mechState, body.worldX + TRAIN_WIDTH / 2, this.gameState.time, this);
+            let k = mech.speedMult(this.mechState, body.worldX + TRAIN_WIDTH / 2, this.gameState.time, this, kind);
             if (k < 1 && kind === 'player') {
                 const relief = Math.min(PENALTY_RELIEF_MAX, this.activeBoostCount() * PENALTY_RELIEF_PER_TOKEN);
                 k = 1 - (1 - k) * (1 - relief);
@@ -983,7 +991,7 @@ class TrainGame {
         const make = (name, stopX, label, signX) => ({ name, stopX, label, signX, x0: stopX - STATION_BEHIND, x1: stopX + STATION_AHEAD });
         return {
             start:  make('start', 0, 'START', 30),
-            finish: make('finish', this.finishLineWorldX + FINISH_STOP_DIST, 'FINISH', this.finishLineWorldX),
+            finish: make('finish', this.finishLineWorldX + FINISH_STOP_DIST * this.speedScale(), 'FINISH', this.finishLineWorldX),
         };
     }
 
@@ -1046,7 +1054,8 @@ class TrainGame {
             target = Math.min(focus, this.train.worldX + 200);
             zoomTarget = STATION_ZOOM;
         }
-        this.cameraX += (target - this.cameraX) * CAMERA_LERP;
+        // A faster world needs a stiffer camera, or the train drifts off-center by the same factor.
+        this.cameraX += (target - this.cameraX) * Math.min(0.5, CAMERA_LERP * this.speedScale());
         this.cameraY += (this.train.elev - this.cameraY) * CAMERA_LERP;
         this.zoom += (zoomTarget - this.zoom) * 0.03;
         if (Math.abs(this.zoom - zoomTarget) < 0.002) this.zoom = zoomTarget;
@@ -1372,6 +1381,19 @@ class TrainGame {
         }
     }
 
+    // Course length and cruise speed for the current level. The cruise speed follows the base
+    // length, so a level that stretches its course (lengthScale) does not also speed itself up.
+    applyRaceLength() {
+        this.raceLength = raceLengthForWins(this.winCount);
+        this.finishLineWorldX = Math.round(this.raceLength * levelScale(this.theme, 'lengthScale'));
+        this.cruiseSpeed = cruiseSpeedForLength(this.raceLength);
+    }
+
+    // Ground-speed multiplier of the current level (1 for normal levels, 2 for Warp Lane).
+    speedScale() {
+        return (this.def && this.def.speedScale) || 1;
+    }
+
     configureOpponentSpeed() {
         const variance = 1 + (Math.random() * 2 - 1) * OPPONENT_SPEED_VARIANCE;
         // Difficulty can keep adapting, but race speed never exceeds +10% cruise.
@@ -1386,12 +1408,11 @@ class TrainGame {
     reset(newTheme = false) {
         if (this.gameState.result === 'win') this.winCount++;
         this.adjustOpponentDifficulty(this.gameState.result);
-        this.finishLineWorldX = raceLengthForWins(this.winCount);
-        this.cruiseSpeed = cruiseSpeedForLength(this.finishLineWorldX);
 
         if (newTheme) {
             this.theme = pickTheme();
         }
+        this.applyRaceLength();
         this.generateRaceTerrain();
 
         this.train.worldX = 0;
@@ -1608,7 +1629,8 @@ class TrainGame {
             body.finished = true;
             const v0 = Math.max(body.vx, 1.5);
             const dist = Math.max(this.stations.finish.stopX - body.worldX, 200);
-            body.brake = { a: (v0 * v0) / (2 * dist) };   // constant deceleration that halts at the mark
+            // Constant deceleration that halts at the mark; ground speed is vx * speedScale.
+            body.brake = { a: this.speedScale() * (v0 * v0) / (2 * dist) };
             if (this.gameState.result) continue;
 
             const other = who === 'player' ? this.opponent : this.train;
@@ -1802,13 +1824,14 @@ class TrainGame {
             // Slope gravity: uphill slows, downhill speeds. Same additive curve for both trains.
             if (this.raceStarted) this.applyTrackGravity(T, ramp < 1 ? 0 : 0.2);
         }
+        const S = this.speedScale();
         const playerMult = T.finished ? 1 : this.speedMultFor(T, 'player');
-        T.worldX += T.vx * playerMult;
+        T.worldX += T.vx * playerMult * S;
         this.updateTrainVertical(T);
         T.y = TRACK_FRONT - TRAIN_HEIGHT - T.elev;
-        if (T.vx > 0 && !T.finished) this.gameState.distance += T.vx * playerMult;
+        if (T.vx > 0 && !T.finished) this.gameState.distance += T.vx * playerMult * S;
 
-        this.wheelFrame += Math.abs(T.vx) * this.wheelAnimationSpeed;
+        this.wheelFrame += Math.abs(T.vx) * this.wheelAnimationSpeed * S;
         if (this.wheelFrame >= TRAIN_SPRITES.wheels.length) this.wheelFrame = 0;
         this.updateCamera();
 
@@ -1865,13 +1888,15 @@ class TrainGame {
             }
             this.applyTrackGravity(O, ramp < 1 ? 0 : 0.2, OPPONENT_SPEED_CEILING);
         }
-        O.worldX += O.vx * (O.finished ? 1 : this.speedMultFor(O, 'opponent'));
+        O.worldX += O.vx * S * (O.finished ? 1 : this.speedMultFor(O, 'opponent'));
         this.updateTrainVertical(O);
         O.y = TRACK_BACK - TRAIN_HEIGHT - O.elev;
-        O.wheelFrame += Math.abs(O.vx) * this.wheelAnimationSpeed;
+        O.wheelFrame += Math.abs(O.vx) * this.wheelAnimationSpeed * S;
         if (O.wheelFrame >= TRAIN_SPRITES.wheels.length) O.wheelFrame = 0;
 
         this.updateCars();
+        const mechU = this.def && this.def.mechanic;
+        if (mechU && mechU.update) mechU.update(this.mechState, this, deltaTime);   // e.g. pickups
         this.updateMarks();
         this.updateFx(deltaTime);
         this.checkFinish();
@@ -1953,7 +1978,7 @@ class TrainGame {
         const vx   = this.train.vx;
         // Effective speed includes the hill multiplier, so the engine labors uphill
         // and races downhill; stop/start thresholds still use the raw vx.
-        const eff  = vx * (this.train.slopeMult ?? 1);
+        const eff  = vx * (this.train.slopeMult ?? 1) * this.speedScale();
         const vol  = Math.min(eff / this.cruiseSpeed, 0.8);
         const rate = this._engRateForSpeed(eff);
 
@@ -3399,7 +3424,7 @@ class TrainGame {
         const activeBoosts = this.activeBoostCount();
         const boostPct     = Math.round(activeBoosts * this.physics.boostPer * 100);
         document.getElementById('speed').textContent =
-            Math.round(this.train.vx * 10) / 10 + (activeBoosts > 0 ? ` 🔥+${boostPct}%` : '');
+            Math.round(this.train.vx * this.speedScale() * 10) / 10 + (activeBoosts > 0 ? ` 🔥+${boostPct}%` : '');
         document.getElementById('distance').textContent =
             `${Math.min(Math.round(this.gameState.distance), this.finishLineWorldX)} / ${this.finishLineWorldX}`;
     }

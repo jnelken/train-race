@@ -11,6 +11,8 @@
 //   lightHud              true when the sky is pale (darkens the minimap panel)
 //   terrain(finishX)      optional: { elevation(x), slope(x), ampMax } with elevation >= 0
 //   slopeGain             optional: hill speed gain for this level (default 1.2)
+//   speedScale            optional: multiplies every train's ground speed (Warp Lane uses 2)
+//   lengthScale           optional: stretches the course (Warp Lane uses 2 so a race takes as long)
 //   layers.{mountains,trees,rocks}   { spawn(x, game) -> obj, draw(ctx, obj, sx, game, elev) }
 //   drawFx(ctx, game, W, H)         optional: weather/particles in screen space, over everything
 //   mechanic              optional, see below
@@ -20,9 +22,11 @@
 //   physics   { inertia, boostMs, boostPer }   inertia < 1 = sluggish accel/decel;
 //                                               boostMs = tap lifetime; boostPer = +speed per tap
 //   init(game)                               -> per-race state (zones etc.)
-//   speedMult(state, x, t, game)             -> multiplier on displacement at train-center x
-//                                               (t = race seconds). < 1 is a penalty that active
-//                                               boost taps partly relieve for the player.
+//   speedMult(state, x, t, game, who)        -> multiplier on displacement at the car's nose x
+//                                               (t = race seconds; who = 'player' | 'opponent').
+//                                               < 1 is a penalty that active boost taps partly
+//                                               relieve for the player; > 1 is a bonus (turbo).
+//   update(state, game, dt)                  optional: runs every racing frame (pickups, timers)
 //   drawZones(ctx, state, game, pass)        pass is 'ground' (under trains) or 'over'
 //   minimapMarks(state, game)                -> [{ x0, x1, color }] static zones for the minimap
 //   fx                                       spec | [spec, ...] hazard particles on the trains
@@ -108,9 +112,10 @@ const ThemeKit = {
     },
 
     // Call cb(who, train, part, cx) for the locomotive (part 0) and every cart of both
-    // trains; cx is the car's centre in train-center world coordinates. Points on a car
-    // come from TRAIN_RIG (sprites.js): left edge = cx - TRAIN_WIDTH / 2, wheels at
-    // left + TRAIN_RIG.wheelX[i]. Never hard-code pixels, so train art can be swapped.
+    // trains. cx is the car's NOSE (front end) in the coordinates ThemeKit.sx() draws, the same
+    // x speedMult() receives; the car's centre is cx - TRAIN_WIDTH / 2. Points on a car come from
+    // TRAIN_RIG (sprites.js): left edge = cx - TRAIN_WIDTH, wheels at left + TRAIN_RIG.wheelX[i].
+    // Never hard-code pixels, so train art can be swapped.
     eachCar(game, cb) {
         for (const who of ['player', 'opponent']) {
             const train = who === 'player' ? game.train : game.opponent;

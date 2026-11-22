@@ -140,7 +140,7 @@ registerTheme({
                 if (Math.abs(cx - game.cameraX) > game.canvas.width / 2 + 120) return;
                 ctx.lineWidth = 1.5;
                 TRAIN_RIG.wheelX.forEach((wx, i) => {
-                    const x = cx - TRAIN_WIDTH / 2 + wx;
+                    const x = cx - TRAIN_WIDTH + wx;
                     const q = (t * 1.7 + part * 0.37 + i * 0.25) % 1;
                     ctx.strokeStyle = `rgba(200,160,110,${0.7 * (1 - q)})`;
                     ctx.beginPath();
