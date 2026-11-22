@@ -61,8 +61,8 @@ const STATION_AHEAD      = 260;    // platform length past the locomotive
 const FINISH_STOP_DIST   = 900;    // the locomotive halts this far past the finish line
 const STATION_ZOOM       = 0.72;   // the camera pulls back this far at the end station
 const STATION_ANCHOR_Y   = 316;    // screen row the zoom pivots on (just above the platform front)
-const PLATFORM_TOP       = 290;    // platform surface y (back edge)
-const PLATFORM_DEPTH     = 30;     // surface height, then a 14 px front face below it
+const PLATFORM_SURFACE   = 10;     // visible depth of the platform deck (the strip people stand on)
+const PLATFORM_FACE      = 40;     // height of the platform's front face below the deck
 const AXLE_OFFSET        = 56;     // px from a car's center to each wheel contact point
 const OPPONENT_SPEED_STEP    = 0.05;
 const OPPONENT_SPEED_VARIANCE = 0.05;
@@ -987,18 +987,26 @@ class TrainGame {
         };
     }
 
-    // People waiting on a platform. Finish-station people get a train to board once a train has
-    // crossed the line (assignBoarders); start-station people just wait.
+    // Platform deck y at the train's floor: the platform is raised so its back edge is flush with
+    // the bottom of the doorway (from TRAIN_RIG, so new train art needs no change here). lane is
+    // 'front' (the player's rail) or 'back' (the rival's rail).
+    platformEdgeY(lane) {
+        return (lane === 'back' ? TRACK_BACK : TRACK_FRONT) - TRAIN_HEIGHT + TRAIN_RIG.doorFloorY;
+    }
+
+    // People waiting on the platforms. At the finish the front-lane crowd boards the player's
+    // train and the back-lane crowd boards the rival's; at the start they just wait.
     spawnStationCrowd() {
         const out = [];
         const skins = ['#f5c98b', '#e0ac69', '#c68642', '#8d5524', '#ffdbac'];
-        const make = (st, count, lo, hi) => {
+        const make = (st, lane, count, lo, hi) => {
+            const edge = this.platformEdgeY(lane);
             for (let i = 0; i < count; i++) {
-                const d = Math.random();
                 out.push({
-                    station: st.name, boards: null, state: 'wait', layer: 'front',
+                    station: st.name, lane, boards: st.name === 'finish' ? (lane === 'back' ? 'opponent' : 'player') : null,
+                    state: 'wait',
                     x: lo + ((i + Math.random() * 0.85) / count) * (hi - lo),
-                    fy: PLATFORM_TOP + 7 + d * (PLATFORM_DEPTH - 12),
+                    fy: edge + 3 + Math.random() * (PLATFORM_SURFACE - 5),
                     color: `hsl(${Math.floor(Math.random() * 360)},65%,58%)`,
                     skin: skins[Math.floor(Math.random() * skins.length)],
                     hair: ['#2b1d12', '#5b3a1f', '#c9a227', '#1a1a1a', '#8c3b1d'][Math.floor(Math.random() * 5)],
@@ -1010,8 +1018,10 @@ class TrainGame {
                 });
             }
         };
-        make(this.stations.finish, 30, this.stations.finish.stopX - 1300, this.stations.finish.stopX + 200);
-        make(this.stations.start, 10, -1200, 140);
+        const fin = this.stations.finish;
+        make(fin, 'front', 22, fin.stopX - 1300, fin.stopX + 200);
+        make(fin, 'back', 12, fin.stopX - 1300, fin.stopX + 200);
+        make(this.stations.start, 'front', 10, -1200, 140);
         return out;
     }
 
@@ -1047,15 +1057,6 @@ class TrainGame {
         if (body.stopped) { body.vx = 0; return; }
         body.vx = Math.max(body.vx - body.brake.a, 0);   // constant deceleration (see checkFinish)
         if (body.vx < 0.03) { body.vx = 0; body.stopped = true; }
-    }
-
-    // The winner's train gets most of the waiting crowd; the other train gets the rest.
-    assignBoarders() {
-        const winner = this.gameState.result === 'lose' ? 'opponent' : 'player';
-        const other = winner === 'player' ? 'opponent' : 'player';
-        for (const p of this.crowd) {
-            if (p.station === 'finish') p.boards = Math.random() < 0.72 ? winner : other;
-        }
     }
 
     updateCars() {
@@ -1098,15 +1099,12 @@ class TrainGame {
             } else if (p.state === 'along') {
                 const dx = p.doorX - p.x;
                 p.x += Math.sign(dx) * Math.min(Math.abs(dx), step);
-                if (Math.abs(dx) <= step) p.state = 'up';
-            } else if (p.state === 'up') {
-                const dy = p.approachY - p.fy;
-                p.fy += Math.sign(dy) * Math.min(Math.abs(dy), step * 0.8);
-                if (Math.abs(dy) <= step * 0.8) p.state = 'enter';
+                if (Math.abs(dx) <= step) p.state = 'enter';
             } else if (p.state === 'enter') {
-                p.enter = Math.min(1, p.enter + dt / 0.5);
-                p.fy = p.approachY - p.enter * 20;
-                p.scale = 1 - 0.3 * p.enter;
+                // Step through the doorway: the deck is flush with the floor, so they just walk in.
+                p.enter = Math.min(1, p.enter + dt / 0.55);
+                p.fy = p.standY - p.enter * 7;
+                p.scale = 1 - 0.28 * p.enter;
                 p.alpha = 1 - p.enter * p.enter;
                 if (p.enter >= 1) p.state = 'done';
             }
@@ -1144,26 +1142,27 @@ class TrainGame {
         }
         doors.sort((a, b) => Math.abs(a - p.x) - Math.abs(b - p.x));
         p.doorX = doors.length ? doors[Math.floor(Math.random() * Math.min(3, doors.length))] : p.x;
-        const laneY = p.boards === 'player' ? TRACK_FRONT : TRACK_BACK;
-        // Step up to just below the doorway, then climb in.
-        p.approachY = laneY - TRAIN_HEIGHT + TRAIN_RIG.doorFloorY + 22;
+        p.standY = this.platformEdgeY(p.lane) + 4;   // walk along the deck right up to the door
+        p.fy = p.standY;
     }
 
     // ── Station drawing ─────────────────────────────────────────────────────
-    // 'ground': the platform slab and its furniture (under the trains). 'over': canopy, posts
-    // and the hanging sign (in front of the trains, so they pass beneath).
+    // The platforms are raised slabs whose deck is flush with each train's floor, drawn in front
+    // of the train they serve so the wheels and undercarriage are hidden. 'back' is the rival's
+    // slab (drawn after the rival, so the player's train covers it when alongside), 'front' is the
+    // player's slab, and 'over' is the canopy, posts and hanging sign above both trains.
     drawStations(ctx, pass) {
         if (!this.stations) return;
         const W = this.canvas.width;
         for (const st of [this.stations.start, this.stations.finish]) {
             const sa = this.worldToScreen(st.x0), sb = this.worldToScreen(st.x1);
             if (sb < -80 || sa > W + 80) continue;
-            if (pass === 'ground') this.drawPlatform(ctx, st, W);
-            else this.drawCanopy(ctx, st, W);
+            if (pass === 'over') this.drawCanopy(ctx, st, W);
+            else this.drawPlatform(ctx, st, W, pass);
         }
     }
 
-    drawPlatform(ctx, st, W) {
+    drawPlatform(ctx, st, W, lane) {
         const step = 40;
         const x0 = Math.max(st.x0, this.cameraX - W / 2 - 160), x1 = Math.min(st.x1, this.cameraX + W / 2 + 160);
         const pts = [];
@@ -1173,6 +1172,10 @@ class TrainGame {
             if (xx >= st.x1) break;
         }
         if (pts.length < 2) return;
+        const back = lane === 'back';
+        const edge = this.platformEdgeY(lane);              // deck's back edge = the doorway floor
+        const deckBot = edge + PLATFORM_SURFACE;            // front edge of the deck
+        const faceBot = deckBot + (back ? 22 : PLATFORM_FACE);
         const poly = (top, bottom, color) => {
             ctx.fillStyle = color;
             ctx.beginPath();
@@ -1181,54 +1184,50 @@ class TrainGame {
             ctx.closePath();
             ctx.fill();
         };
-        const top = PLATFORM_TOP, bot = PLATFORM_TOP + PLATFORM_DEPTH;
-        poly(bot, bot + 14, '#6c747d');                    // front face
-        poly(top, bot, '#a9b1b9');                         // surface
-        poly(top, top + 3, '#f1c40f');                     // yellow safety edge
-        poly(bot + 10, bot + 14, 'rgba(0,0,0,0.28)');      // shadow under the lip
-        // Paving lines and dark edge tiles, world-aligned so they scroll with the platform.
-        ctx.strokeStyle = 'rgba(70,80,92,0.4)';
+        poly(deckBot, faceBot, back ? '#59616a' : '#6c747d');             // front face (hides the wheels)
+        poly(edge, deckBot, back ? '#98a0a8' : '#aab2ba');                // deck
+        poly(deckBot - 2.5, deckBot, '#f1c40f');                          // yellow safety edge
+        poly(faceBot - 6, faceBot, 'rgba(0,0,0,0.22)');                   // shadow at the base
+        // Panel joints on the face and paving lines on the deck, world-aligned so they scroll.
         ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(40,48,58,0.35)';
+        ctx.beginPath();
+        for (let x = Math.ceil(x0 / 96) * 96; x < x1; x += 96) {
+            const sx = this.worldToScreen(x), e = this.getElevation(x);
+            ctx.moveTo(sx, deckBot - e);
+            ctx.lineTo(sx, faceBot - e);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(70,80,92,0.3)';
         ctx.beginPath();
         for (let x = Math.ceil(x0 / 64) * 64; x < x1; x += 64) {
             const sx = this.worldToScreen(x), e = this.getElevation(x);
-            ctx.moveTo(sx, top + 3 - e);
-            ctx.lineTo(sx - 5, bot - e);
+            ctx.moveTo(sx, edge - e);
+            ctx.lineTo(sx - 4, deckBot - 2 - e);
         }
         ctx.stroke();
-        // Benches and bins between the people.
-        for (let x = Math.ceil((st.x0 + 120) / 360) * 360; x < st.x1 - 80; x += 360) {
-            if (x < x0 - 60 || x > x1 + 60) continue;
-            const sx = this.worldToScreen(x), e = this.getElevation(x), by = bot - 4 - e;
-            ctx.fillStyle = '#5b4636';
-            ctx.fillRect(sx, by - 11, 34, 4);
-            ctx.fillRect(sx, by - 17, 34, 3);
-            ctx.fillStyle = '#2f3740';
-            ctx.fillRect(sx + 2, by - 7, 3, 7);
-            ctx.fillRect(sx + 29, by - 7, 3, 7);
-            ctx.fillStyle = '#3a8a4a';                       // litter bin
-            ctx.fillRect(sx + 52, by - 14, 11, 14);
-            ctx.fillStyle = '#25602f';
-            ctx.fillRect(sx + 51, by - 16, 13, 3);
+        if (!back) {   // a fascia strip of dark tiles under the lip
+            poly(deckBot + 3, deckBot + 8, 'rgba(30,38,48,0.4)');
         }
     }
 
     drawCanopy(ctx, st, W) {
         const roofY = 138 - this.getElevation(st.stopX);
+        const deckFront = this.platformEdgeY('front') + PLATFORM_SURFACE;
         const a = Math.max(this.worldToScreen(st.x0), -40), b = Math.min(this.worldToScreen(st.x1), W + 40);
         if (b <= a) return;
         const t = Date.now() / 1000;
-        // Posts down to the platform, drawn first so the roof overlaps their tops.
+        // Posts down to the front edge of the deck, drawn first so the roof overlaps their tops.
         for (let x = Math.ceil((st.x0 + 40) / 260) * 260; x < st.x1; x += 260) {
             const sx = this.worldToScreen(x);
             if (sx < -20 || sx > W + 20) continue;
             const e = this.getElevation(x);
             ctx.fillStyle = '#56626e';
-            ctx.fillRect(sx - 3, roofY + 8, 6, PLATFORM_TOP - e - roofY - 6);
+            ctx.fillRect(sx - 3, roofY + 8, 6, deckFront - e - roofY - 8);
             ctx.fillStyle = '#7b8896';
-            ctx.fillRect(sx - 3, roofY + 8, 2, PLATFORM_TOP - e - roofY - 6);
+            ctx.fillRect(sx - 3, roofY + 8, 2, deckFront - e - roofY - 8);
             ctx.fillStyle = '#3d4650';
-            ctx.fillRect(sx - 6, PLATFORM_TOP - e - 3, 12, 4);
+            ctx.fillRect(sx - 6, deckFront - e - 3, 12, 4);
         }
         // Roof slab with a bright top edge and a scalloped fascia.
         ctx.fillStyle = '#38424d';
@@ -1286,9 +1285,7 @@ class TrainGame {
     drawCrowdLayer(ctx, layer) {
         if (!this.crowd || !this.crowd.length) return;
         for (const p of this.crowd) {
-            const onPlatform = p.fy > TRACK_FRONT + 6;
-            const mine = (onPlatform || p.boards !== 'opponent') ? 'front' : 'mid';
-            if (mine === layer) this.drawPerson(ctx, p);
+            if ((p.lane === 'back' ? 'mid' : 'front') === layer) this.drawPerson(ctx, p);
         }
     }
 
@@ -1297,7 +1294,7 @@ class TrainGame {
         const sx = this.worldToScreen(p.x);
         if (sx < -24 || sx > this.canvas.width + 24) return;
         const t = Date.now() / 1000 + p.phase;
-        const walking = p.state === 'along' || p.state === 'up';
+        const walking = p.state === 'along' || p.state === 'enter';
         const bounce = walking ? Math.abs(Math.sin(t * 9)) * 3 : Math.sin(t * 1.3) * 0.5;
         const swing = walking ? Math.sin(t * 9) * 3 : 0;
         const y = p.fy - this.getElevation(p.x);
@@ -1605,7 +1602,6 @@ class TrainGame {
             const other = who === 'player' ? this.opponent : this.train;
             this.gameState.isRunning = false;
             this.gameState.result = other.worldX >= F ? 'tie' : who === 'player' ? 'win' : 'lose';
-            this.assignBoarders();
             if (!this.gameState.endTime) {
                 this.gameState.endTime = Date.now();
                 if (this.gameState.result === 'win' && !this._winSoundPlayed) {
@@ -3061,7 +3057,6 @@ class TrainGame {
         const oppBob  = isCity ? Math.sin(Date.now() / 400) * 2.5 : 0;
         const trainBob = isCity ? Math.sin(Date.now() / 400 + 1) * 2.5 : 0;
 
-        this.drawStations(ctx, 'ground');
         if (elevated) this.drawMountainTrack(ctx, TRACK_BACK);
         else          this.drawTrack(ctx, TRACK_BACK, 0.85, isCandy);
         const opponentSX = this.worldToScreen(this.opponent.worldX);
@@ -3095,6 +3090,7 @@ class TrainGame {
             }
             this.drawLocoDoors(ctx, opponentSX, oppY);
         }
+        this.drawStations(ctx, 'back');
         this.drawCrowdLayer(ctx, 'mid');
 
         // Sahara/mountain/candy foreground props
@@ -3155,6 +3151,7 @@ class TrainGame {
             }
             this.drawLocoDoors(ctx, trainSX, trainY);
         }
+        this.drawStations(ctx, 'front');
         this.drawCrowdLayer(ctx, 'front');
         this.drawStations(ctx, 'over');
 
@@ -3213,7 +3210,6 @@ class TrainGame {
         }
 
         if (mech && mech.drawZones) mech.drawZones(ctx, this.mechState, this, 'ground');
-        this.drawStations(ctx, 'ground');
 
         if (elevated) this.drawMountainTrack(ctx, TRACK_BACK);
         else          this.drawTrack(ctx, TRACK_BACK, 0.85);
@@ -3222,6 +3218,7 @@ class TrainGame {
         this.drawThemedTrain(ctx, 'opponent', elevated);
         this.drawHazardFx(ctx, 'opponent');
         ctx.globalAlpha = 1;
+        this.drawStations(ctx, 'back');
         this.drawCrowdLayer(ctx, 'mid');
 
         const rLayer = this.layers.find(l => l.name === 'rocks');
@@ -3237,6 +3234,7 @@ class TrainGame {
         this.drawFinishLine(ctx);
         this.drawThemedTrain(ctx, 'player', elevated);
         this.drawHazardFx(ctx, 'player');
+        this.drawStations(ctx, 'front');
         this.drawCrowdLayer(ctx, 'front');
         this.drawStations(ctx, 'over');
         if (mech && mech.drawZones) mech.drawZones(ctx, this.mechState, this, 'over');
