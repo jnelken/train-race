@@ -9,6 +9,11 @@ registerTheme({
     ground: [[0, '#3f6330'], [0.3, '#2f4a22'], [1, '#1c2c17']],
     track: { tie: '#4b3a28', rail: '#92928a' },
 
+    // Steamy rolling hills.
+    terrain(finishX) {
+        return hillTerrain(finishX, { maxHeight: 700, rolliness: 0.6 });
+    },
+
     layers: {
         // Far: misty green ridgelines.
         mountains: {

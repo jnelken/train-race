@@ -90,6 +90,14 @@ registerTheme({
     ground: [[0, '#2b3a33'], [0.25, '#1b2622'], [1, '#0c1210']],
     track: { tie: '#2a2220', rail: '#8c8a96' },
 
+    // The rails and ground stay flat; the hills are a ghost lifting the trains off them, so there is
+    // no climbing or descending to slow anyone (slopeGain 0 turns the hill speed effect off).
+    flatTrack: true,
+    slopeGain: 0,
+    terrain(finishX) {
+        return hillTerrain(finishX, { maxHeight: 340, rolliness: 0.6 });
+    },
+
     drawSky(ctx, game, W, H) {
         const t = Date.now() / 1000;
         ctx.fillStyle = '#ffffff';
@@ -401,6 +409,21 @@ registerTheme({
         drawZones(ctx, state, game, pass) {
             const t = Date.now() / 1000;
             const vis = ThemeKit.visible(game, 120);
+            if (pass === 'ground') {
+                // A pale beam from the rails up to every car the ghost has lifted.
+                ThemeKit.eachCar(game, (who, train, part, cx) => {
+                    if (Math.abs(cx - game.cameraX) > game.canvas.width / 2 + 160) return;
+                    const lift = part === 0 ? train.elev : (train.carts[part - 1] || { elev: 0 }).elev;
+                    if (lift < 6) return;
+                    const left = ThemeKit.sx(game, cx - TRAIN_WIDTH), rail = ThemeKit.railY(game, who, cx - TRAIN_WIDTH / 2);
+                    const a = Math.min(lift / 60, 1) * 0.3;
+                    const grad = ctx.createLinearGradient(0, rail - lift, 0, rail);
+                    grad.addColorStop(0, `rgba(170,255,215,0)`);
+                    grad.addColorStop(1, `rgba(170,255,215,${a})`);
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(left + 8, rail - lift, TRAIN_WIDTH - 16, lift);
+                });
+            }
             for (const z of state.zones) {
                 if (z.x1 < vis.x0 || z.x0 > vis.x1) continue;
                 if (pass === 'ground') {

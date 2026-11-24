@@ -157,7 +157,7 @@ registerTheme({
     },
 
     terrain(finishX) {
-        return hillTerrain(finishX, { maxHeight: 840, rolliness: 0.8 });
+        return hillTerrain(finishX, { maxHeight: 840, rolliness: 0.8, minRadius: 700 });
     },
 
     layers: {

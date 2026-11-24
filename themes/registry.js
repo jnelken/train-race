@@ -14,7 +14,9 @@
 //                         curvature-limited hill generator: maxHeight is the tallest hill in px and
 //                         rolliness 0..1 runs from flat plains with hills interspersed (0) to hills taking up
 //                         the whole course with no plains (1). Bends are never tighter than HILL_MIN_RADIUS.
-//   slopeGain             optional: hill speed gain for this level (default 1.2)
+//   slopeGain             optional: hill speed gain for this level (default 1.2; 0 turns the hill speed effect off)
+//   flatTrack             optional: true keeps rails, ground and platforms flat while trains still ride `terrain`
+//                         (Haunted: a ghost lifts the trains off the rails)
 //   speedScale            optional: multiplies every train's ground speed (Warp Lane uses 2)
 //   lengthScale           optional: stretches the course (Warp Lane uses 2 so a race takes as long)
 //   layers.{mountains,trees,rocks}   { spawn(x, game) -> obj, draw(ctx, obj, sx, game, elev) }

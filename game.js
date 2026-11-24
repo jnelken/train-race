@@ -295,7 +295,7 @@ function hillFace(dh, dx, R) {
 function makeHills(finishLineWorldX, opts = {}) {
     const maxHeight = opts.maxHeight ?? HILL_DEFAULTS.maxHeight;
     const rolliness = Math.min(1, Math.max(0, opts.rolliness ?? HILL_DEFAULTS.rolliness));
-    const R = HILL_MIN_RADIUS;
+    const R = opts.minRadius ?? HILL_MIN_RADIUS;            // a level can ask for gentler bends
     const avail = Math.max(finishLineWorldX - HILL_START_MARGIN - HILL_END_MARGIN, 1000);
     const coverage = 0.3 + 0.7 * rolliness;                  // share of the course the faces take up
     const n = 2 + Math.floor(Math.random() * 2) + Math.round(rolliness * 1.5);  // 2-3 big hills, up to 4-5 when rolling
@@ -752,8 +752,20 @@ class TrainGame {
         return 0;
     }
 
-    getElevation(worldX) {
+    // Where trains ride. Usually the same as the track; a level with def.flatTrack keeps the rails and
+    // ground flat while the trains still follow the hills (Haunted: a ghost lifts them off the rails).
+    liftElevation(worldX) {
         if (this.def) return this.terrain ? this.terrain.elevation(worldX) : 0;
+        return this.getElevation(worldX);
+    }
+
+    liftSlope(worldX) {
+        if (this.def) return this.terrain ? this.terrain.slope(worldX) : 0;
+        return this.getSlope(worldX);
+    }
+
+    getElevation(worldX) {
+        if (this.def) return this.terrain && !this.def.flatTrack ? this.terrain.elevation(worldX) : 0;
         if (this.theme === 'mountain') return getMountainElevation(worldX, this.mountainProfile);
         if (this.theme === 'candy') return getCandyElevation(worldX, this.candyWave);
         if (this.theme === 'sahara') return getBumpElevation(worldX, this.saharaHills);
@@ -761,7 +773,7 @@ class TrainGame {
     }
 
     getSlope(worldX) {
-        if (this.def) return this.terrain ? this.terrain.slope(worldX) : 0;
+        if (this.def) return this.terrain && !this.def.flatTrack ? this.terrain.slope(worldX) : 0;
         if (this.theme === 'mountain') return getMountainSlope(worldX, this.mountainProfile);
         if (this.theme === 'candy') return getCandySlope(worldX, this.candyWave);
         if (this.theme === 'sahara') return getBumpSlope(worldX, this.saharaHills);
@@ -778,7 +790,7 @@ class TrainGame {
 
     // Theme terrain for minimap — same profile as gameplay elevation.
     getVisualElevation(worldX) {
-        return this.getElevation(worldX);
+        return this.liftElevation(worldX);
     }
 
     hasElevatedTrack() {
@@ -1180,7 +1192,8 @@ class TrainGame {
         if (this.gameState.result) {
             const focus = this.stations.finish.stopX - 380;
             target = Math.min(focus, this.train.worldX + 200);
-            zoomTarget = STATION_ZOOM;
+            // Pull back far enough that the whole consist fits (locomotive + carts + a margin).
+            zoomTarget = Math.min(STATION_ZOOM, this.canvas.width / ((CART_COUNT + 1) * TRAIN_WIDTH + 140));
         }
         // A faster world needs a stiffer camera, or the train drifts off-center by the same factor.
         // Past ~7 px/frame of hill-boosted speed (a long descent) the camera stiffens in proportion, so
@@ -1189,7 +1202,7 @@ class TrainGame {
         this.cameraX += (target - this.cameraX) * Math.min(0.5, CAMERA_LERP * this.speedScale() * Math.max(1, effSpeed / 7));
         // Near-vertical faces lift the train faster than a gentle follow can track, so the
         // vertical lerp stiffens past a 45° grade (the mountain and candy never reach it).
-        const grade = Math.abs(this.getSlope(this.train.worldX + TRAIN_WIDTH / 2));
+        const grade = Math.abs(this.liftSlope(this.train.worldX + TRAIN_WIDTH / 2));
         const lerpY = Math.min(0.5, CAMERA_LERP * (1 + 1.5 * Math.max(0, grade - 1)));
         this.cameraY += (this.train.elev - this.cameraY) * lerpY;
         this.zoom += (zoomTarget - this.zoom) * 0.03;
@@ -1814,8 +1827,8 @@ class TrainGame {
     // the convex flattening just BEFORE the summit, i.e. detach on the
     // uphill, which is never allowed.
     updateBodyVertical(body, centerWorldX, vx) {
-        const elevFront = this.getElevation(centerWorldX + AXLE_OFFSET);
-        const elevRear  = this.getElevation(centerWorldX - AXLE_OFFSET);
+        const elevFront = this.liftElevation(centerWorldX + AXLE_OFFSET);
+        const elevRear  = this.liftElevation(centerWorldX - AXLE_OFFSET);
         const chordElev = (elevFront + elevRear) / 2;
 
         // Visual-only hills: glue to the rails (no ballistic airborne).
@@ -1859,7 +1872,7 @@ class TrainGame {
         const STEP = 8;
         let x = fromX, remaining = dist;
         for (;;) {
-            const slope = this.getSlope(x - STEP / 2);
+            const slope = this.liftSlope(x - STEP / 2);
             const arcPerDx = Math.sqrt(1 + slope * slope);
             if (STEP * arcPerDx >= remaining) return x - remaining / arcPerDx;
             x -= STEP;
@@ -1895,8 +1908,8 @@ class TrainGame {
             const centerX = this.trailAlongTrack(prevCX, TRAIN_WIDTH);
             cart.centerX = centerX;
             if (cart.airborne) {
-                const elevFront = this.getElevation(centerX + AXLE_OFFSET);
-                const elevRear  = this.getElevation(centerX - AXLE_OFFSET);
+                const elevFront = this.liftElevation(centerX + AXLE_OFFSET);
+                const elevRear  = this.liftElevation(centerX - AXLE_OFFSET);
                 cart.elev = (elevFront + elevRear) / 2;
                 cart.vy = 0;
                 cart.airborne = false;
@@ -1910,8 +1923,8 @@ class TrainGame {
                 cart.centerX = prevCX - TRAIN_WIDTH * Math.cos(prev.angle);
                 cart.elev = prev.elev + TRAIN_WIDTH * Math.sin(prev.angle);
                 cart.vy = prev.vy;
-                const elevFront = this.getElevation(cart.centerX + AXLE_OFFSET);
-                const elevRear  = this.getElevation(cart.centerX - AXLE_OFFSET);
+                const elevFront = this.liftElevation(cart.centerX + AXLE_OFFSET);
+                const elevRear  = this.liftElevation(cart.centerX - AXLE_OFFSET);
                 const chordElev = (elevFront + elevRear) / 2;
                 if (cart.elev <= chordElev) {
                     cart.elev = chordElev;
