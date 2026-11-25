@@ -307,9 +307,12 @@ function makeHills(finishLineWorldX, opts = {}) {
         (i === 0 || i === n) ? 0 : rolliness * Math.random() * 0.4 * Math.min(peaks[i - 1], peaks[i]));
     const faceWts = Array.from({ length: 2 * n }, () => 0.5 + Math.random());   // random run per unit of height
 
-    // Fit: if faces that cannot be as steep as asked need more run than the course has, shrink the hills.
-    let faces, scale = 1;
-    for (let iter = 0; iter < 40; iter++) {
+    // Fit: a face that cannot be as steep as asked needs more run than its share. First take that run
+    // from the faces that have run to spare (they get gentler); only if that is not enough, shrink
+    // every hill and try again. `faces` is always built at the final `scale`, so the levels the
+    // layout snaps to below match the faces exactly.
+    const sumDx = (fs) => fs.reduce((s, f) => s + f.dx, 0);
+    const fit = (scale) => {
         const heights = [];       // |dh| of each face, rise then fall for every hill
         for (let i = 0; i < n; i++) {
             heights.push(scale * (peaks[i] - floors[i]));
@@ -317,10 +320,22 @@ function makeHills(finishLineWorldX, opts = {}) {
         }
         const wts = heights.map((h, k) => h * faceWts[k]);
         const wsum = wts.reduce((s, w) => s + w, 0) || 1;
-        faces = heights.map((h, k) => hillFace(h, avail * coverage * wts[k] / wsum, R));
-        if (faces.reduce((s, f) => s + f.dx, 0) <= avail) break;
-        scale *= 0.92;
-    }
+        const share = wts.map(w => avail * coverage * w / wsum);
+        let fs = heights.map((h, k) => hillFace(h, share[k], R));
+        const over = sumDx(fs) - avail;
+        if (over <= 0) return fs;
+        const dxMin = heights.map(h => hillFace(h, 0, R).dx);
+        const slack = share.map((s, k) => Math.max(0, s - dxMin[k]));
+        const spare = slack.reduce((s, v) => s + v, 0);
+        if (spare < over * 1.001) return null;
+        fs = heights.map((h, k) => hillFace(h, share[k] - slack[k] * Math.min(1, over * 1.001 / spare), R));
+        return sumDx(fs) <= avail ? fs : null;
+    };
+    let faces = null, scale = 1;
+    // A face under 0.5 px tall is flat and takes exactly its share, so the hills always fit by the
+    // time the tallest is that small; a course too short for any hill is laid flat.
+    while (!(faces = fit(scale)) && scale * maxHeight >= 0.5) scale *= 0.92;
+    if (!faces) { scale = 0; faces = fit(0); }
     const plains = avail - faces.reduce((s, f) => s + f.dx, 0);
     const pw = Array.from({ length: n + 1 }, () => 0.25 + Math.random());
     const pwsum = pw.reduce((s, w) => s + w, 0);
@@ -1776,6 +1791,10 @@ class TrainGame {
         for (const [body, who] of [[this.train, 'player'], [this.opponent, 'opponent']]) {
             if (body.finished || body.worldX < F) continue;
             body.finished = true;
+            // Past the line the hill factor no longer applies, so fold its leftover (it decays slowly
+            // after a late descent) into vx: the train keeps its ground speed instead of stepping down.
+            body.vx *= body.slopeMult ?? 1;
+            body.slopeMult = 1;
             const v0 = Math.max(body.vx, 1.5);
             const dist = Math.max(this.stations.finish.stopX - body.worldX, 200);
             // Constant deceleration that halts at the mark; ground speed is vx * speedScale.
@@ -3011,7 +3030,7 @@ class TrainGame {
     // that screen edge, under the rival's column, with how many px of height separate the trains.
     drawRivalIndicator(ctx) {
         const O = this.opponent;
-        if (!this.raceStarted || this.gameState.result || O.finished) return;
+        if (!this.raceStarted || this.paused || this.gameState.result || O.finished) return;
         const W = this.canvas.width, H = this.canvas.height;
         const top = O.y + (this.hasElevatedTrack() ? this.cameraY : 0);   // the rival's screen y
         const above = top + TRAIN_HEIGHT < 6, below = top > H - 6;
